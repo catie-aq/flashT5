@@ -1,18 +1,14 @@
-"""
-Fused Attention
-===============
+'''
+This work is based on Triton original implementation of flash attention (MIT licenced):
+* Copyright 2018-2020 Philippe Tillet
+* Copyright 2020-2022 OpenAI
 
-This is a Triton implementation of the Flash Attention v2 algorithm from Tri Dao (https://tridao.me/publications/flash2/flash2.pdf)
-Credits: OpenAI kernel team
-
-Extra Credits:
-- Original flash attention paper (https://arxiv.org/abs/2205.14135)
-- Rabe and Staats (https://arxiv.org/pdf/2112.05682v2.pdf)
-
-Modifications:
+Modifications to the original file:
+- Fix backward for non-causal attention
 - Addition of attention biases
+- Support for batch size of type (1,1,len_q,len_k)
 
-"""
+'''
 
 import pytest
 import torch
@@ -25,31 +21,23 @@ import triton.language as tl
 def _attn_fwd_inner(acc, l_i, m_i, q,  #
                     K_block_ptr, V_block_ptr,  #
                     B_block_ptr,  #
-                    start_m, qk_scale,  #
+                    qk_scale,  #
+                    start, end, step, #
                     BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr, BLOCK_N: tl.constexpr,  #
-                    STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,  #
-                    N_CTX: tl.constexpr):
-    # range of values handled by this stage
-    if STAGE == 1:
-        lo, hi = 0, start_m * BLOCK_M
-    elif STAGE == 2:
-        lo, hi = start_m * BLOCK_M, (start_m + 1) * BLOCK_M
-        lo = tl.multiple_of(lo, BLOCK_M)
-    # causal = False
-    else:
-        lo, hi = 0, N_CTX
+                    offs_m: tl.constexpr, offs_n: tl.constexpr,  #
+                    MASK: tl.constexpr):
 
-    K_block_ptr = tl.advance(K_block_ptr, (0, lo))
-    V_block_ptr = tl.advance(V_block_ptr, (lo, 0))
-    B_block_ptr = tl.advance(B_block_ptr, (0, lo))
+    K_block_ptr = tl.advance(K_block_ptr, (0, start))
+    V_block_ptr = tl.advance(V_block_ptr, (start, 0))
+    B_block_ptr = tl.advance(B_block_ptr, (0, start))
 
     # loop over k, v and update accumulator
-    for start_n in range(lo, hi, BLOCK_N):
+    for start_n in range(start, end, step):
         start_n = tl.multiple_of(start_n, BLOCK_N)
 
         # -- compute qk ----
         k = tl.load(K_block_ptr)
-        bias = tl.load(B_block_ptr).to(tl.float32)
+        bias = tl.load(B_block_ptr)
 
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         qk += tl.dot(q, k)
@@ -57,7 +45,7 @@ def _attn_fwd_inner(acc, l_i, m_i, q,  #
         qk = (qk * qk_scale)
         qk += (bias * 1.44269504)  # 1/log(2)
 
-        if STAGE == 2:
+        if MASK:
             mask = offs_m[:, None] >= (start_n + offs_n[None, :])
             qk += tl.where(mask, 0, -1.0e6)
 
@@ -121,7 +109,7 @@ def _attn_fwd(Q, K, V, B, sm_scale, M, Out,  #
               BLOCK_M: tl.constexpr,  #
               BLOCK_DMODEL: tl.constexpr,  #
               BLOCK_N: tl.constexpr,  #
-              STAGE: tl.constexpr  #
+              CAUSAL: tl.constexpr  #
               ):
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
@@ -187,24 +175,35 @@ def _attn_fwd(Q, K, V, B, sm_scale, M, Out,  #
     # stage 1: off-band
     # For causal = True, STAGE = 3 and _attn_fwd_inner gets 1 as its STAGE
     # For causal = False, STAGE = 1, and _attn_fwd_inner gets 3 as its STAGE
-    if STAGE & 1:
+    if CAUSAL:
         acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, #
                                         B_block_ptr,  #
-                                        start_m, qk_scale,  #
+                                        qk_scale,  #
+                                        0, start_m * BLOCK_M, BLOCK_N,
                                         BLOCK_M, BLOCK_DMODEL, BLOCK_N,  #
-                                        4 - STAGE, offs_m, offs_n, N_CTX,  #
+                                        offs_m, offs_n,
+                                        False #
                                         )
     # stage 2: on-band
-    if STAGE & 2:
-        # barrier makes it easier for compielr to schedule the
-        # two loops independently
-        tl.debug_barrier()
-        acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr,  #
-                                        B_block_ptr,  #
-                                        start_m, qk_scale,  #
-                                        BLOCK_M, BLOCK_DMODEL, BLOCK_N,  #
-                                        2, offs_m, offs_n, N_CTX, #
-                                        )
+    tl.debug_barrier()
+
+    if CAUSAL:
+        start = start_m * BLOCK_M
+        start = tl.multiple_of(start, BLOCK_M)
+        end = (start_m + 1) * BLOCK_M
+        step = BLOCK_N
+    else:
+        start = 0
+        end = N_CTX
+        step = BLOCK_N
+
+    acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr,  #
+                                    B_block_ptr,  #
+                                    qk_scale,  #
+                                    start, end, step,
+                                    BLOCK_M, BLOCK_DMODEL, BLOCK_N,  #
+                                    offs_m, offs_n, CAUSAL#
+                                    )
     # epilogue
     m_i += tl.math.log2(l_i)
     acc = acc / l_i[:, None]
@@ -309,7 +308,8 @@ def _attn_bwd_dq(dq, q, K, V, B, sm_scale, #
                  # Filled in by the wrapper.
                  start_m, start_n, num_steps,  #
                  MASK: tl.constexpr,
-                 return_ds):
+                 RETURN_DS: tl.constexpr,
+                 USE_DS_ATOMIC_ADD: tl.constexpr):
 
     offs_m = start_m + tl.arange(0, BLOCK_M2)
     offs_n = start_n + tl.arange(0, BLOCK_N2)
@@ -346,8 +346,11 @@ def _attn_bwd_dq(dq, q, K, V, B, sm_scale, #
         ds = ds.to(q.dtype)
 
         # save ds
-        if return_ds:
-            tl.store(ds_ptrs, ds)
+        if RETURN_DS:
+            if USE_DS_ATOMIC_ADD:
+                tl.atomic_add(ds_ptrs, ds)
+            else:
+                tl.store(ds_ptrs, ds)
 
         # Compute dQ.
         # NOTE: We need to de-scale dq in the end, because kT was pre-scaled.
@@ -365,7 +368,7 @@ def _attn_bwd_dq(dq, q, K, V, B, sm_scale, #
 @triton.jit
 def _attn_bwd(Q, K, V, B, sm_scale,  #
               DO,  #
-              DQ, DK, DV, DS,  #
+              DQ, DK, DV, DS, #
               M, D,
               # shared by Q/K/V/DO.
               stride_z, stride_h, stride_tok, stride_d, #
@@ -377,14 +380,17 @@ def _attn_bwd(Q, K, V, B, sm_scale,  #
               BLOCK_N2: tl.constexpr,  #
               BLK_SLICE_FACTOR: tl.constexpr,  #
               BLOCK_DMODEL: tl.constexpr,
-              causal,
-              return_ds):
+              CAUSAL: tl.constexpr,
+              RETURN_DS: tl.constexpr):
     LN2: tl.constexpr = 0.6931471824645996  # = ln(2)
 
     bhid = tl.program_id(2)
     off_chz = (bhid * N_CTX).to(tl.int64)
-    adj = (stride_h * (bhid % H) + stride_z * (bhid // H)).to(tl.int64)
-    adj_b = (stride_bh * (bhid % H) + stride_bz * (bhid // H)).to(tl.int64)
+    off_z = bhid // H
+    off_h = bhid % H
+
+    adj = stride_h * off_h.to(tl.int64) + stride_z * off_z.to(tl.int64)
+    adj_b = stride_bh * off_h.to(tl.int64) + stride_bz * off_z.to(tl.int64)
     pid = tl.program_id(0)
 
     # offset pointers for batch/head
@@ -416,22 +422,27 @@ def _attn_bwd(Q, K, V, B, sm_scale,  #
     k = tl.load(K + offs_n[:, None] * stride_tok + offs_k[None, :] * stride_d)
     v = tl.load(V + offs_n[:, None] * stride_tok + offs_k[None, :] * stride_d)
 
-    num_steps = BLOCK_N1 // MASK_BLOCK_M1
+    num_steps_per_block = BLOCK_N1 // MASK_BLOCK_M1
 
-    dk, dv = _attn_bwd_dkdv(dk, dv,  #
-                            Q, k, v, B, sm_scale,  #
-                            DO,  #
-                            M, D,  #
-                            stride_tok, stride_d,  #
-                            stride_bq, stride_bk,
-                            H, N_CTX,  #
-                            MASK_BLOCK_M1, BLOCK_N1, BLOCK_DMODEL,  #
-                            start_n, start_m, num_steps,  #
-                            MASK=causal  #
-                            )
+    if CAUSAL:
+        dk, dv = _attn_bwd_dkdv(dk, dv,  #
+                                Q, k, v, B, sm_scale,  #
+                                DO,  #
+                                M, D,  #
+                                stride_tok, stride_d,  #
+                                stride_bq, stride_bk,
+                                H, N_CTX,  #
+                                MASK_BLOCK_M1, BLOCK_N1, BLOCK_DMODEL,  #
+                                start_n, start_m, num_steps_per_block,  #
+                                MASK=True  #
+                                )
 
-    start_m += num_steps * MASK_BLOCK_M1
-    num_steps = (N_CTX - start_m) // BLOCK_M1
+    if CAUSAL:
+        start_m += num_steps_per_block * MASK_BLOCK_M1
+        num_steps = (N_CTX - start_m) // BLOCK_M1
+    else:
+        start_m = 0
+        num_steps = N_CTX // BLOCK_M1
 
     # Compute dK and dV for non-masked blocks.
     dk, dv = _attn_bwd_dkdv(  #
@@ -474,20 +485,28 @@ def _attn_bwd(Q, K, V, B, sm_scale,  #
     # but inside each call to _attn_bwd_dq, from left to right), but that's
     # not due to anything important.  I just wanted to reuse the loop
     # structure for dK & dV above as much as possible.
-    num_steps = BLOCK_M2 // MASK_BLOCK_N2
-    dq = _attn_bwd_dq(dq, q, K, V, B, sm_scale,  #
-                      do, DS, m, D,  #
-                      stride_tok, stride_d,  #
-                      stride_bq, stride_bk,  #
-                      H, N_CTX,  #
-                      BLOCK_M2, MASK_BLOCK_N2, BLOCK_DMODEL,  #
-                      start_m, end_n - num_steps * MASK_BLOCK_N2, num_steps,  #
-                      MASK=causal, #
-                      return_ds=return_ds  #
-                      )
-    end_n -= num_steps * MASK_BLOCK_N2
+    num_steps_per_block = BLOCK_M2 // MASK_BLOCK_N2
+    if CAUSAL:
+        dq = _attn_bwd_dq(dq, q, K, V, B, sm_scale,  #
+                        do, DS, m, D,  #
+                        stride_tok, stride_d,  #
+                        stride_bq, stride_bk,  #
+                        H, N_CTX,  #
+                        BLOCK_M2, MASK_BLOCK_N2, BLOCK_DMODEL,  #
+                        start_m, end_n - num_steps_per_block * MASK_BLOCK_N2, num_steps_per_block,  #
+                        MASK=CAUSAL, #
+                        RETURN_DS=RETURN_DS,  #
+                        USE_DS_ATOMIC_ADD=((stride_bz == 0) or (stride_bh == 0))
+                        )
+
     # stage 2
-    num_steps = end_n // BLOCK_N2
+    if CAUSAL:
+        end_n -= num_steps_per_block * MASK_BLOCK_N2
+        num_steps = end_n // BLOCK_N2
+    else:
+        end_n = N_CTX
+        num_steps = end_n // BLOCK_N2
+
     dq = _attn_bwd_dq(dq, q, K, V, B, sm_scale,  #
                       do, DS, m, D,  #
                       stride_tok, stride_d,  #
@@ -496,7 +515,8 @@ def _attn_bwd(Q, K, V, B, sm_scale,  #
                       BLOCK_M2, BLOCK_N2, BLOCK_DMODEL,  #
                       start_m, end_n - num_steps * BLOCK_N2, num_steps,  #
                       MASK=False,  #
-                      return_ds=return_ds  #
+                      RETURN_DS=RETURN_DS,  #
+                      USE_DS_ATOMIC_ADD=((stride_bz == 0) or (stride_bh == 0))
                       )
     # Write back dQ.
     dq_ptrs = DQ + offs_m[:, None] * stride_tok + offs_k[None, :] * stride_d
@@ -516,6 +536,14 @@ class _attention(torch.autograd.Function):
         assert Lq == Lk and Lk == Lv
         assert Lk in {16, 32, 64, 128}
 
+        # Trick to support shape such as (1, 1, seqlen_q, seqlen_k)
+        bias_batch_stride = b.stride(0)
+        bias_heads_stride = b.stride(1)
+        if (b.shape[0] != q.shape[0]) and (b.shape[0] == 1):
+            bias_batch_stride = 0
+        if (b.shape[1] != q.shape[1]) and (b.shape[1] == 1):
+            bias_heads_stride = 0
+
         o = torch.empty_like(q)
 
         BLOCK_M = 128
@@ -523,7 +551,6 @@ class _attention(torch.autograd.Function):
 
         num_stages = 4 if Lk <= 64 else 3
         num_warps = 4
-        stage = 3 if causal else 1
 
         # Tuning for H100
         if torch.cuda.get_device_capability()[0] == 9:
@@ -538,16 +565,16 @@ class _attention(torch.autograd.Function):
             q.stride(0), q.stride(1), q.stride(2), q.stride(3),  #
             k.stride(0), k.stride(1), k.stride(2), k.stride(3),  #
             v.stride(0), v.stride(1), v.stride(2), v.stride(3),  #
-            b.stride(0), b.stride(1), b.stride(2), b.stride(3),  #
+            bias_batch_stride, bias_heads_stride, b.stride(2), b.stride(3),  #
             o.stride(0), o.stride(1), o.stride(2), o.stride(3),  #
             q.shape[0], q.shape[1],  #
             N_CTX=q.shape[2],  #
             BLOCK_M=BLOCK_M,  #
             BLOCK_N=BLOCK_N,  #
             BLOCK_DMODEL=Lk,  #
-            STAGE=stage,  #
             num_warps=num_warps,  #
-            num_stages=num_stages  #
+            num_stages=num_stages,  #
+            CAUSAL=causal
         )
 
         ctx.save_for_backward(q, k, v, b, o, M)
@@ -555,6 +582,8 @@ class _attention(torch.autograd.Function):
         ctx.sm_scale = sm_scale
         ctx.BLOCK_DMODEL = Lk
         ctx.causal = causal
+        ctx.bias_batch_stride = bias_batch_stride
+        ctx.bias_heads_stride = bias_heads_stride
         return o
 
     @staticmethod
@@ -566,6 +595,9 @@ class _attention(torch.autograd.Function):
         dk = torch.empty_like(k)
         dv = torch.empty_like(v)
         ds = torch.empty_like(b)
+
+        if (ctx.bias_batch_stride == 0) or (ctx.bias_heads_stride == 0):
+            ds = ds.zero_()
 
         BATCH, N_HEAD, N_CTX = q.shape[:3]
         PRE_BLOCK = 128
@@ -596,7 +628,7 @@ class _attention(torch.autograd.Function):
             q, arg_k, v, arg_b, ctx.sm_scale, do, dq, dk, dv, ds,  #
             M, delta,  #
             q.stride(0), q.stride(1), q.stride(2), q.stride(3),  #
-            b.stride(0), b.stride(1), b.stride(2), b.stride(3),  #
+            ctx.bias_batch_stride, ctx.bias_heads_stride, b.stride(2), b.stride(3),  #
             N_HEAD, N_CTX,  #
             BLOCK_M1=BLOCK_M1, BLOCK_N1=BLOCK_N1,  #
             BLOCK_M2=BLOCK_M2, BLOCK_N2=BLOCK_N2,  #
@@ -604,8 +636,8 @@ class _attention(torch.autograd.Function):
             BLOCK_DMODEL=ctx.BLOCK_DMODEL,  #
             num_warps=NUM_WARPS,  #
             num_stages=NUM_STAGES,  #
-            causal=ctx.causal,
-            return_ds=b.requires_grad
+            CAUSAL=ctx.causal,
+            RETURN_DS=b.requires_grad
         )
 
         return dq, dk, dv, ds, None, None
