@@ -18,7 +18,7 @@ from src.model.ops.cross_entropy_loss import fast_cross_entropy_loss
 @pytest.mark.parametrize(
     "logits", [32768, 32128, 32102]
 )
-def test_bias_attention(batch_size, seqlen, logits, dtype):
+def test_cross_entropy(batch_size, seqlen, logits, dtype):
 
     values = []
     shape = (batch_size, seqlen)
@@ -38,6 +38,6 @@ def test_bias_attention(batch_size, seqlen, logits, dtype):
     out_tri.backward(out_tri)
     input_grad_tri, input.grad = input.grad.clone(), None
 
-    print(torch.allclose(z_loss_tri, z_loss_ref, atol=1e-2, rtol=0.0))
-    print(torch.allclose(out_tri, out_ref, atol=1e-2, rtol=0.0))
-    print(torch.allclose(input_grad_ref, input_grad_tri, atol=1e-2, rtol=0.0))
+    assert torch.allclose(z_loss_tri, z_loss_ref, atol=1e-2, rtol=0.0)
+    assert torch.allclose(out_tri, out_ref, atol=1e-2, rtol=0.0)
+    assert torch.allclose(input_grad_ref, input_grad_tri, atol=1e-2, rtol=0.0)

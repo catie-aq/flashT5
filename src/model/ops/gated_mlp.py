@@ -3,11 +3,13 @@ import math
 import triton
 import triton.language as tl
 
+from torch.cuda.amp import custom_bwd, custom_fwd
+
 ## Activation function from https://github.com/facebookresearch/xformers/blob/main/xformers/triton/k_activations.py
 
 _kAlpha = math.sqrt(2.0 / math.pi)
 
-def gelu_ref(x):
+def gelu_torch(x):
     """
     GeLU_ activation - Gaussian error linear unit
 
@@ -15,7 +17,7 @@ def gelu_ref(x):
     """
     return 0.5 * x * (1 + torch.tanh(_kAlpha * (x + 0.044715 * x * x * x)))
 
-def gelu_grad_ref(x):
+def gelu_grad_torch(x):
     # CREDITS: Fast implementation proposed in
     # https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/fused_bias_gelu.py#L30
     tanh_out = torch.tanh(0.79788456 * x * (1 + 0.044715 * x * x))
@@ -138,6 +140,9 @@ def gated_matmul_fwd(
         order=(0, 1),
     )
 
+    # ugly trick to get the dtype - how to do ?
+    ref = tl.load(input)
+
     # initialize and iteratively update accumulator
     acc1 = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     acc2 = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
@@ -180,11 +185,11 @@ def gated_matmul_fwd(
         )
 
         if IS_EVEN_MNK:
-            tl.store(act_in_1_ptrs, acc1)
-            tl.store(act_in_2_ptrs, acc2)
+            tl.store(act_in_1_ptrs, acc1.to(ref.dtype))
+            tl.store(act_in_2_ptrs, acc2.to(ref.dtype))
         else:
-            tl.store(act_in_1_ptrs, acc1, boundary_check=(0, 1))
-            tl.store(act_in_2_ptrs, acc2, boundary_check=(0, 1))
+            tl.store(act_in_1_ptrs, acc1.to(ref.dtype), boundary_check=(0, 1))
+            tl.store(act_in_2_ptrs, acc2.to(ref.dtype), boundary_check=(0, 1))
 
     if USE_GELU:
         acc1 = gelu(acc1)
@@ -205,9 +210,9 @@ def gated_matmul_fwd(
     )
 
     if IS_EVEN_MNK:
-        tl.store(out_ptrs, acc)
+        tl.store(out_ptrs, acc.to(ref.dtype))
     else:
-        tl.store(out_ptrs, acc, boundary_check=(0, 1))
+        tl.store(out_ptrs, acc.to(ref.dtype), boundary_check=(0, 1))
 
 @triton.jit
 def gated_matmul_bwd_ygrad(
@@ -261,6 +266,8 @@ def gated_matmul_bwd_ygrad(
         order=(1, 0),
     )
 
+    ref = tl.load(act_input_1 + tl.arange(0, 1))
+
     if IS_EVEN_MNK:
         dout_blk = tl.load(dout_block_ptr)
         actin_1_blk = tl.load(actin_1_block_ptr)
@@ -300,11 +307,11 @@ def gated_matmul_bwd_ygrad(
     )
 
     if IS_EVEN_MNK:
-        tl.store(y1_grad_ptrs, actin_act_grad)
-        tl.store(y2_grad_ptrs, actin_act)
+        tl.store(y1_grad_ptrs, actin_act_grad.to(ref.dtype))
+        tl.store(y2_grad_ptrs, actin_act.to(ref.dtype))
     else:
-        tl.store(y1_grad_ptrs, actin_act_grad, boundary_check=(0, 1))
-        tl.store(y2_grad_ptrs, actin_act, boundary_check=(0, 1))
+        tl.store(y1_grad_ptrs, actin_act_grad.to(ref.dtype), boundary_check=(0, 1))
+        tl.store(y2_grad_ptrs, actin_act.to(ref.dtype), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -418,10 +425,11 @@ def gated_matmul_bwd_input(
         order=(1, 0),
     )
 
+    ref = tl.load(w1)
     if IS_EVEN_MNK:
-        tl.store(dx_ptrs, acc_dx)
+        tl.store(dx_ptrs, acc_dx.to(ref.dtype))
     else:
-        tl.store(dx_ptrs, acc_dx, boundary_check=(0, 1))
+        tl.store(dx_ptrs, acc_dx.to(ref.dtype), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -494,6 +502,8 @@ def gated_matmul_bwd_weights(
         order=(1, 0),
     )
 
+    ref = tl.load(input + tl.arange(0, 1))
+
     # initialize and iteratively update accumulator
     acc_dw1 = tl.zeros((BLOCK_N, BLOCK_K), dtype=tl.float32)
     acc_dw2 = tl.zeros((BLOCK_N, BLOCK_K), dtype=tl.float32)
@@ -536,21 +546,29 @@ def gated_matmul_bwd_weights(
     )
 
     if IS_EVEN_MNK:
-        tl.store(dw1_ptrs, acc_dw1)
-        tl.store(dw2_ptrs, acc_dw2)
+        tl.store(dw1_ptrs, acc_dw1.to(ref.dtype))
+        tl.store(dw2_ptrs, acc_dw2.to(ref.dtype))
     else:
-        tl.store(dw1_ptrs, acc_dw1, boundary_check=(0, 1))
-        tl.store(dw2_ptrs, acc_dw2, boundary_check=(0, 1))
+        tl.store(dw1_ptrs, acc_dw1.to(ref.dtype), boundary_check=(0, 1))
+        tl.store(dw2_ptrs, acc_dw2.to(ref.dtype), boundary_check=(0, 1))
 
 
 class GatedMLP(torch.autograd.Function):
     @staticmethod
+    @custom_fwd
     def forward(ctx, x, w1, w2, use_gelu=True):
 
-        BLOCK_M = 64
-        BLOCK_N = 32
-        BLOCK_K = 32
+        BLOCK_M = 128
+        BLOCK_N = 64
+        BLOCK_K = 64
         GROUP_M = 8
+
+        SAVE_ACT_IN = x.requires_grad
+
+        if torch.is_autocast_enabled():
+            x = x.to(torch.get_autocast_gpu_dtype())
+            w1 = w1.to(torch.get_autocast_gpu_dtype())
+            w2 = w2.to(torch.get_autocast_gpu_dtype())
 
         assert x.is_contiguous()
         assert w1.is_contiguous()
@@ -567,8 +585,9 @@ class GatedMLP(torch.autograd.Function):
         IS_EVEN_MNK = ((M % BLOCK_M) == 0) and ((N % BLOCK_N) == 0) and ((K % BLOCK_K) == 0)
 
         out = torch.empty((M, N), device=x.device, dtype=x.dtype)
+
         act_input_1, act_input_2 = None, None
-        if x.requires_grad:
+        if SAVE_ACT_IN:
             act_input_1 = torch.empty_like(out)
             act_input_2 = torch.empty_like(out)
 
@@ -582,7 +601,7 @@ class GatedMLP(torch.autograd.Function):
             w1.stride(0),
             BLOCK_M, GROUP_M, BLOCK_N, BLOCK_K,
             use_gelu,
-            x.requires_grad,
+            SAVE_ACT_IN,
             IS_EVEN_MNK
         )
 
@@ -596,10 +615,11 @@ class GatedMLP(torch.autograd.Function):
         return out
 
     @staticmethod
+    @custom_bwd
     def backward(ctx, dout):
-        BLOCK_M = 64
-        BLOCK_N = 32
-        BLOCK_K = 32
+        BLOCK_M = 128
+        BLOCK_N = 64
+        BLOCK_K = 64
         GROUP_M = 8
 
         x_, w1, w2, act_input_1, act_input_2 = ctx.saved_tensors
@@ -607,6 +627,7 @@ class GatedMLP(torch.autograd.Function):
         M, K = x_.shape
         N, K = w1.shape
 
+        '''
         din = torch.empty_like(x_)
         dw1 = torch.empty_like(w1)
         dw2 = torch.empty_like(w2)
@@ -641,8 +662,8 @@ class GatedMLP(torch.autograd.Function):
             ctx.is_even_nmk)
 
         # reorder sizes
-        BLOCK_M = 32
-        BLOCK_N = 64
+        BLOCK_M = 64
+        BLOCK_N = 128
         grid = (triton.cdiv(N, BLOCK_N) * triton.cdiv(K, BLOCK_K),)
         gated_matmul_bwd_weights[grid](
             x_,
@@ -654,6 +675,33 @@ class GatedMLP(torch.autograd.Function):
             BLOCK_M, GROUP_M,
             BLOCK_N, BLOCK_K,
             ctx.is_even_nmk)
+
+        din = din if len(ctx.x_shape) == 2 else din.reshape(ctx.x_shape)
+        '''
+
+        dout_ = dout if dout.ndim == 2 else dout.flatten(0, -2)
+
+        y1_grad = torch.empty_like(dout_)
+        y2_grad = torch.empty_like(dout_)
+
+        grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+        gated_matmul_bwd_ygrad[grid](
+            dout_,
+            y1_grad, y2_grad,
+            act_input_1, act_input_2,
+            M, N,
+            dout_.stride(0),
+            # Meta-parameters
+            BLOCK_M, BLOCK_N,
+            ctx.use_gelu,
+            ctx.is_even_nmk)
+
+        #y2_grad = torch.mul(gelu_torch(x_ @ w1.t()), dout_)
+        #y1_grad = torch.mul(gelu_grad_torch(x_ @ w1.t()) * (x_ @ w2.t()), dout_)
+
+        din = torch.matmul(y2_grad, w2) + torch.matmul(y1_grad, w1)
+        dw1 = torch.matmul(y1_grad.t(), x_)
+        dw2 = torch.matmul(y2_grad.t(), x_)
 
         din = din if len(ctx.x_shape) == 2 else din.reshape(ctx.x_shape)
 
