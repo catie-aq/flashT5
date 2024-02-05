@@ -24,17 +24,21 @@ model_args:
   relative_attention_max_distance: 128
   relative_attention_num_buckets: 32
   tie_word_embeddings: false
-  use_flash_attention: true
+  use_flash_attention: "triton"
   use_glu_mlp: true
   use_randomized_position_encoding: false
   z_loss: 0.0001
+  use_triton_layernorm: False
+  use_triton_crossentropy: False
+  use_triton_gated_mlp: False
+  use_gelu_act: True
 training_args:
   adafactor: false
   adam_beta1: 0.9
   adam_beta2: 0.999
   adam_epsilon: 1.0e-06
-  bf16: false
-  bf16_full_eval: false
+  bf16: true
+  bf16_full_eval: true
   dataloader_drop_last: true
   dataloader_num_workers: 16
   dataloader_pin_memory: true
@@ -65,7 +69,7 @@ training_args:
   save_steps: 5000
   save_strategy: steps
   seed: 42
-  torch_compile: true
+  torch_compile: false
   warmup_ratio: 0.0
   warmup_steps: 10000
   weight_decay: 0.0
