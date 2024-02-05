@@ -12,21 +12,19 @@ import torch.nn.functional as F
 
 from transformers.modeling_utils import ModuleUtilsMixin
 from transformers.modeling_outputs import ModelOutput
-from transformers.activations import ACT2FN
 from transformers import PreTrainedModel
 
+from .ops.rms_norm import fast_rms_layernorm
+from .ops.cross_entropy_loss import fast_cross_entropy_loss
+from .ops.flash_attention_v2_bias import attention
+from .ops.gated_mlp import gated_mlp
+
 #from flash_attn import flash_attn_kvpacked_func
-from ..utils.fa2_lib.fa2_compilable import flash_attn_kvpacked_func, flash_attn_func
+from ..utils.fa2_lib.fa2_compilable import flash_attn_kvpacked_func
+from ..utils.attn_ref import attn_ref
 
 from .configuration_flash_t5 import FlashT5Config
 from ..utils.positional_encoding import ALiBiPositionalEncoding, RelativePositionalEncoding
-
-def compute_zloss(logits: torch.Tensor, z_loss: float) -> Tuple[torch.Tensor, torch.Tensor]:
-
-  logits_sum = torch.logsumexp(logits, dim=-1, keepdim=True)
-  log_z = torch.squeeze(logits_sum, axis=-1)
-  total_z_loss = z_loss * torch.square(log_z)
-  return total_z_loss.mean()
 
 @dataclass
 class EncoderOutput(ModelOutput):
@@ -41,15 +39,21 @@ class Seq2SeqLMOutput(ModelOutput):
     encoder_outputs: EncoderOutput = None
 
 class FlashT5LayerNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6):
+    def __init__(self, hidden_size, eps=1e-6, use_triton_layernorm=False):
         """
         Construct a layernorm module in the T5 style. No bias and no subtraction of mean.
         """
         super().__init__()
+
+        self.use_triton_layernorm = use_triton_layernorm
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
 
     def forward(self, hidden_states):
+
+        if self.use_triton_layernorm:
+            return fast_rms_layernorm(hidden_states, self.weight, self.variance_epsilon)
+
         # T5 uses a layer_norm which only scales and doesn't shift, which is also known as Root Mean
         # Square Layer Normalization https://arxiv.org/abs/1910.07467 thus varience is calculated
         # w/o mean and there is no bias. Additionally we want to make sure that the accumulation for
@@ -64,13 +68,12 @@ class FlashT5LayerNorm(nn.Module):
 
         return self.weight * hidden_states
 
-class FlashT5DenseActDense(nn.Module):
+class FlashT5DenseAct(nn.Module):
     def __init__(self, config: FlashT5Config):
         super().__init__()
         self.wi = nn.Linear(config.d_model, config.d_ff, bias=False)
-        self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
         self.dropout = nn.Dropout(config.dropout_rate)
-        self.act = ACT2FN[config.dense_act_fn]
+        self.act = torch.nn.GELU(approximate='tanh') if config.use_gelu_act else torch.nn.ReLU()
 
     def forward(self, hidden_states):
         hidden_states = self.wi(hidden_states)
@@ -82,52 +85,48 @@ class FlashT5DenseActDense(nn.Module):
             and self.wo.weight.dtype != torch.int8
         ):
             hidden_states = hidden_states.to(self.wo.weight.dtype)
-        hidden_states = self.wo(hidden_states)
+
         return hidden_states
 
-class FlashT5DenseGatedActDense(nn.Module):
+class FlashT5DenseGatedAct(nn.Module):
     def __init__(self, config: FlashT5Config):
         super().__init__()
         self.wi_0 = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wi_1 = nn.Linear(config.d_model, config.d_ff, bias=False)
-        self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
         self.dropout = nn.Dropout(config.dropout_rate)
-        self.act = ACT2FN[config.dense_act_fn]
+        self.act = torch.nn.GELU(approximate='tanh') if config.use_gelu_act else torch.nn.ReLU()
+
+        self.use_triton_gated_mlp = config.use_triton_gated_mlp
+        self.use_gelu_act = config.use_gelu_act
 
     def forward(self, hidden_states):
-        hidden_gelu = self.act(self.wi_0(hidden_states))
+
+        if self.use_triton_gated_mlp:
+            return gated_mlp(hidden_states, self.wi_0.weight, self.wi_1.weight, self.use_gelu_act)
+
+        hidden_act = self.act(self.wi_0(hidden_states))
         hidden_linear = self.wi_1(hidden_states)
-        hidden_states = hidden_gelu * hidden_linear
+        hidden_states = hidden_act * hidden_linear
         hidden_states = self.dropout(hidden_states)
 
-        # To make 8bit quantization work for google/flan-t5-xxl, self.wo is kept in float32.
-        # See https://github.com/huggingface/transformers/issues/20287
-        # we also make sure the weights are not in `int8` in case users will force `_keep_in_fp32_modules` to be `None``
-        if (
-            isinstance(self.wo.weight, torch.Tensor)
-            and hidden_states.dtype != self.wo.weight.dtype
-            and self.wo.weight.dtype != torch.int8
-        ):
-            hidden_states = hidden_states.to(self.wo.weight.dtype)
-
-        hidden_states = self.wo(hidden_states)
         return hidden_states
-
 
 class FlashT5LayerFF(nn.Module):
     def __init__(self, config: FlashT5Config):
         super().__init__()
         if config.use_glu_mlp:
-            self.act = FlashT5DenseGatedActDense(config)
+            self.act = FlashT5DenseGatedAct(config)
         else:
-            self.act = FlashT5DenseActDense(config)
+            self.act = FlashT5DenseAct(config)
 
-        self.layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon, use_triton_layernorm=config.use_triton_layernorm)
+        self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
         self.dropout = nn.Dropout(config.dropout_rate)
 
     def forward(self, hidden_states):
         forwarded_states = self.layer_norm(hidden_states).type_as(hidden_states)
         forwarded_states = self.act(forwarded_states)
+        forwarded_states = self.wo(forwarded_states)
         hidden_states = hidden_states + self.dropout(forwarded_states)
         return hidden_states
 
@@ -137,6 +136,7 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         super().__init__()
         self.is_decoder = config.is_decoder
         self.has_relative_attention_bias = has_relative_attention_bias
+        self.is_causal = self.is_decoder and (not self.has_relative_attention_bias)
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
         self.relative_attention_max_distance = config.relative_attention_max_distance
         self.d_model = config.d_model
@@ -185,29 +185,27 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         kv = kv.view(batch_size, key_length, 2, self.n_heads, self.key_value_proj_dim)
 
         if position_bias is None:
-            bias = None
 
             if self.pe_encoding is not None:
-                q, kv, _, bias = self.pe_encoding(q, kv, None)
+                q, kv, _, position_bias = self.pe_encoding(q, kv, None)
 
-            if bias is None:
-                bias = torch.zeros(
-                    (1, self.n_heads, seq_length, key_length), device=q.device, dtype=q.dtype
+            if position_bias is None:
+                position_bias = torch.zeros(
+                    (1, 1, seq_length, key_length), device=q.device, dtype=q.dtype
                  )
 
-            # Cannot sum the mask with bias as usual, as it may create -inf which break with FA2
-            if mask is not None and self.use_flash_attention:
-                position_bias = torch.where(mask[:, None, None, :], bias, torch.finfo(q.dtype).min)
-            elif mask is not None:
-                position_bias = bias + mask
-                position_bias = position_bias.to(q.dtype)
-
-        if self.use_flash_attention:
-            output = flash_attn_kvpacked_func(q, kv, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias)
+        if self.use_flash_attention == "fa2":
+            output = flash_attn_kvpacked_func(q, kv, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
+        elif self.use_flash_attention == "triton":
+            assert self.p_dropout == 0.0, "Triton attention does not support dropout"
+            q = q.permute(0, 2, 1, 3)
+            kv = kv.permute(2, 0, 3, 1, 4)
+            output = attention(q, kv[0], kv[1], position_bias, self.is_causal, self.softmax_scale)
+            output = output.permute(0, 2, 1, 3)
         else: # use flash attention
             q = q.permute(0, 2, 1, 3)
             kv = kv.permute(0, 3, 2, 1, 4)
-            output = F.scaled_dot_product_attention(q, kv[:, :, 0], kv[:, :, 1], attn_mask=position_bias, dropout_p=self.p_dropout, scale=self.softmax_scale)
+            output = attn_ref(q, kv[:, :, 0], kv[:, :, 1], position_bias, dropout_p=self.p_dropout, sm_scale=self.softmax_scale, causal=self.is_causal)
             output = output.permute(0, 2, 1, 3)
 
         output = self.o(output.reshape(output.shape[0], output.shape[1], self.inner_dim))
@@ -352,18 +350,6 @@ class FlashT5Stack(nn.Module, ModuleUtilsMixin):
                 batch_size, encoder_seq_length, device=inputs_embeds.device, dtype=torch.bool
             )
 
-        if not self.use_flash_attention:
-            attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
-
-            if self.is_decoder and encoder_hidden_states is not None:
-                encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
-                encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
-                if encoder_attention_mask is None:
-                    encoder_attention_mask = torch.ones(encoder_hidden_shape, device=inputs_embeds.device)
-                encoder_attention_mask = self.invert_attention_mask(encoder_attention_mask)
-            else:
-                encoder_attention_mask = None
-
         position_bias = None
         encoder_decoder_position_bias = None
 
@@ -415,10 +401,12 @@ class FlashT5PreTrainedModel(PreTrainedModel):
             module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
             if hasattr(module, "lm_head") and not self.config.tie_word_embeddings:
                 module.lm_head.weight.data.normal_(mean=0.0, std=factor * 1.0)
-        elif isinstance(module, FlashT5DenseGatedActDense):
+        elif isinstance(module, FlashT5DenseGatedAct):
             d_ff, d_model = module.wi_0.weight.data.size()
             module.wi_0.weight.data.normal_(mean=0.0, std=factor * ((d_model) ** -0.5))
             module.wi_1.weight.data.normal_(mean=0.0, std=factor * ((d_model) ** -0.5))
+        elif isinstance(module, FlashT5LayerFF):
+            d_ff, d_model = module.wo.weight.data.size()
             module.wo.weight.data.normal_(mean=0.0, std=factor * ((d_ff) ** -0.5))
         elif isinstance(module, FlashT5Attention):
             d_model = self.config.d_model
@@ -568,18 +556,8 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
 
         loss = None
         if labels is not None:
-            lm_logits_flat = lm_logits.view(-1, lm_logits.size(-1))
-            labels_flat = labels.view(-1)
-
-            masked_tokens = labels_flat != self.config.pad_token_id
-            lm_logits_flat = lm_logits_flat[masked_tokens]
-            labels_flat = labels_flat[masked_tokens]
-
-            loss = self.loss_fct(lm_logits_flat, labels_flat)
-
-            if (self.config.z_loss is not None) and (self.config.z_loss != 0.0):
-                z_loss = compute_zloss(lm_logits_flat[labels_flat != self.config.pad_token_id], self.config.z_loss)
-                loss += z_loss
+            loss, z_loss = fast_cross_entropy_loss(lm_logits, labels, use_slow=(not self.config.use_triton_crossentropy))
+            loss += z_loss
 
         return Seq2SeqLMOutput(
             loss=loss,

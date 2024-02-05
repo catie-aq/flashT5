@@ -22,10 +22,14 @@ class FlashT5Config(T5Config):
         use_randomized_position_encoding=False,
         label_smoothing=0.0,
         z_loss=None,
-        use_flash_attention=False,
+        use_flash_attention=None,
         max_sequence_length=1024,
         attention_dropout_rate=0.0,
         alibi_mode="symetric",
+        use_triton_layernorm=False,
+        use_triton_crossentropy=False,
+        use_triton_gated_mlp=False,
+        use_gelu_act=True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -41,6 +45,10 @@ class FlashT5Config(T5Config):
         self.max_sequence_length = max_sequence_length
         self.alibi_mode = alibi_mode
         self.attention_dropout_rate = attention_dropout_rate
+        self.use_triton_layernorm = use_triton_layernorm
+        self.use_triton_crossentropy = use_triton_crossentropy
+        self.use_triton_gated_mlp = use_triton_gated_mlp
+        self.use_gelu_act = use_gelu_act
 
         self.auto_map = AUTO_MAP
 
