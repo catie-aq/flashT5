@@ -262,6 +262,8 @@ class RotaryPositionalEncoding(nn.Module):
             if self.scale is None:
                 self._cos_cached = torch.cos(freqs).to(dtype)
                 self._sin_cached = torch.sin(freqs).to(dtype)
+                self._cos_k_cached = None
+                self._sin_k_cached = None
             else:
                 power = (
                     torch.arange(seqlen, dtype=self.scale.dtype, device=self.scale.device)
@@ -280,16 +282,7 @@ class RotaryPositionalEncoding(nn.Module):
             self._update_cos_sin_cache(self.max_sequence_length, device=q.device, dtype=q.dtype)
 
         if k is None and v is None:
-            if self.scale is None:
-                q = apply_rotary_emb_qkv_(
-                    q,
-                    self._cos_cached,
-                    self._sin_cached,
-                    interleaved=self.interleaved,
-                    seqlen_offsets=0
-                )
-            else:
-                q = apply_rotary_emb_qkv_(
+            q = apply_rotary_emb_qkv_(
                     q,
                     self._cos_cached,
                     self._sin_cached,
@@ -308,22 +301,13 @@ class RotaryPositionalEncoding(nn.Module):
                 seqlen_offsets=0
             )
 
-            if self.scale is None:
-                k = apply_rotary_emb_kv_(
-                    k,
-                    self._cos_cached,
-                    self._sin_cached,
-                    interleaved=self.interleaved,
-                    seqlen_offsets=0,
-                )
-            else:
-                k = apply_rotary_emb_kv_(
-                    k,
-                    self._cos_k_cached,
-                    self._sin_k_cached,
-                    interleaved=self.interleaved,
-                    seqlen_offsets=0,
-                )
+            k = apply_rotary_emb_kv_(
+                k,
+                self._cos_cached if self._cos_k_cached is None else self._cos_k_cached,
+                self._sin_cached if self._sin_k_cached is None else self._sin_k_cached,
+                interleaved=self.interleaved,
+                seqlen_offsets=0,
+            )
         else:
             q = apply_rotary_emb_func(
                 q,
@@ -333,35 +317,21 @@ class RotaryPositionalEncoding(nn.Module):
                 inplace=True,
                 seqlen_offsets=0
             )
-            if self.scale is None:
-                k = apply_rotary_emb_func(
-                    k,
-                    self._cos_cached,
-                    self._sin_cached,
-                    interleaved=self.interleaved,
-                    seqlen_offsets=0,
-                )
-                v = apply_rotary_emb_func(
-                    v,
-                    self._cos_cached,
-                    self._sin_cached,
-                    interleaved=self.interleaved,
-                    seqlen_offsets=0,
-                )
-            else:
-                k = apply_rotary_emb_func(
-                    k,
-                    self._cos_k_cached,
-                    self._sin_k_cached,
-                    interleaved=self.interleaved,
-                    seqlen_offsets=0,
-                )
-                v = apply_rotary_emb_func(
-                    v,
-                    self._cos_k_cached,
-                    self._sin_k_cached,
-                    interleaved=self.interleaved,
-                    seqlen_offsets=0,
-                )
+
+            k = apply_rotary_emb_func(
+                k,
+                self._cos_cached if self._cos_k_cached is None else self._cos_k_cached,
+                self._sin_cached if self._sin_k_cached is None else self._sin_k_cached,
+                interleaved=self.interleaved,
+                seqlen_offsets=0,
+            )
+
+            v = apply_rotary_emb_func(
+                v,
+                self._cos_cached if self._cos_k_cached is None else self._cos_k_cached,
+                self._sin_cached if self._sin_k_cached is None else self._sin_k_cached,
+                interleaved=self.interleaved,
+                seqlen_offsets=0,
+            )
 
         return q, k, v, None
