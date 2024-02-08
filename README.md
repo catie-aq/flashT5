@@ -95,13 +95,13 @@ So think of this repository as a side project on which we'd like to make improve
 
 ❗ LISTER TOUT CE QUI SERA FAIT DE MANIERE CERTAINE + TOUT CE QUI SERAIT A FAIRE MAIS SANS GARANTIES QUE CELA SOIT FAIT FAUTE DE TEMPS
 
-- Positional Enconding
+- Positional Enconding  
 Currently in this GitHub repository we provide the absolute positional encoding.
 We had also implemented the [ALIBI](https://arxiv.org/abs/2108.12409) one by Press et al. (2021) but it's now better to use the implementation since [added to the GitHub repository of the Flash Attention](https://github.com/Dao-AILab/flash-attention/pull/540).
 This is not a priority compared to the other tests we would like to perform described above, but if we have some time, we would like to test the [ROPE](https://arxiv.org/abs/2104.09864) encoding of Su et al. (2023)
 
 ## License
-❗ A AJOUTER
+[Apache-2.0 license](https://github.com/catie-aq/flashT5/tree/main?tab=Apache-2.0-1-ov-file#readme)
 
 ## Citation
-❗ A AJOUTER
+❗ A AJOUTER UNE FOIS LE DOI GENERER SUR HF
