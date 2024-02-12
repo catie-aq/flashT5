@@ -8,7 +8,7 @@ import flash_attn_2_cuda
 
 fa2_lib = Library("fa2", "DEF")
 
-fa2_lib.define('fwd(Tensor q, Tensor k, Tensor v, Tensor out, float dropout_p, float softmax_scale, bool causal, int window_size_left, int window_size_right, Tensor attn_bias, bool return_softmax, Tensor gen_) -> (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)')
+fa2_lib.define('fwd(Tensor q, Tensor k, Tensor v, Tensor out, Tensor alibi_slopes, float dropout_p, float softmax_scale, bool causal, int window_size_left, int window_size_right, Tensor attn_bias, bool return_softmax, Tensor gen_) -> (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)')
 
 @impl(fa2_lib, 'fwd', "CUDA")
 def cuda_fa2_fwd(
@@ -16,6 +16,7 @@ def cuda_fa2_fwd(
     k: torch.Tensor,
     v: torch.Tensor,
     out: torch.Tensor,
+    alibi_slopes: torch.Tensor,
     dropout_p: float,
     softmax_scale: float,
     causal: bool,
@@ -29,7 +30,7 @@ def cuda_fa2_fwd(
     if attn_bias is not None:
         attn_bias = attn_bias.contiguous()
 
-    return flash_attn_2_cuda.fwd(q, k, v, out, dropout_p, softmax_scale, causal, window_size_left, window_size_right, attn_bias, return_softmax, None)
+    return flash_attn_2_cuda.fwd(q, k, v, out, alibi_slopes, dropout_p, softmax_scale, causal, window_size_left, window_size_right, attn_bias, return_softmax, None)
 
 @impl(fa2_lib, 'fwd', "Meta")
 def meta_fa2_fwd(
@@ -37,6 +38,7 @@ def meta_fa2_fwd(
     k: torch.Tensor,
     v: torch.Tensor,
     out: torch.Tensor,
+    alibi_slopes: torch.Tensor,
     dropout_p: float,
     softmax_scale: float,
     causal: bool,
@@ -71,7 +73,7 @@ def meta_fa2_fwd(
         torch.empty((2), dtype=torch.int64, device=q.device) # rng_state
         )
 
-fa2_lib.define('bwd(Tensor dout, Tensor q, Tensor k, Tensor v, Tensor out, Tensor softmax_lse, Tensor dq, Tensor dk, Tensor dv, float dropout_p, float softmax_scale, bool causal, int window_size_left, int window_size_right, Tensor attn_bias, bool attn_bias_require_grad, Tensor ds, int seqlen_k_orig, Tensor gen_, Tensor rng_state) -> (Tensor, Tensor, Tensor, Tensor, Tensor)')
+fa2_lib.define('bwd(Tensor dout, Tensor q, Tensor k, Tensor v, Tensor out, Tensor softmax_lse, Tensor dq, Tensor dk, Tensor dv, Tensor alibi_slopes, float dropout_p, float softmax_scale, bool causal, int window_size_left, int window_size_right, bool deterministic, Tensor attn_bias, bool attn_bias_require_grad, Tensor ds, int seqlen_k_orig, Tensor gen_, Tensor rng_state) -> (Tensor, Tensor, Tensor, Tensor, Tensor)')
 
 @impl(fa2_lib, 'bwd', "CUDA")
 def cuda_fa2_bwd(
@@ -84,11 +86,13 @@ def cuda_fa2_bwd(
     dq: torch.Tensor,
     dk: torch.Tensor,
     dv: torch.Tensor,
+    alibi_slopes: torch.Tensor,
     dropout_p: float,
     softmax_scale: float,
     causal: bool,
     window_size_left: int,
     window_size_right: int,
+    deterministic: bool,
     attn_bias: torch.Tensor,
     attn_bias_require_grad: bool,
     ds: torch.Tensor,
@@ -101,7 +105,7 @@ def cuda_fa2_bwd(
     if attn_bias is not None:
         attn_bias = attn_bias.contiguous()
 
-    return flash_attn_2_cuda.bwd(dout, q, k, v, out, softmax_lse, dq, dk, dv, dropout_p, softmax_scale, causal, window_size_left, window_size_right, attn_bias, attn_bias_require_grad, ds, None, rng_sate)
+    return flash_attn_2_cuda.bwd(dout, q, k, v, out, softmax_lse, dq, dk, dv, alibi_slopes, dropout_p, softmax_scale, causal, window_size_left, window_size_right, deterministic, attn_bias, attn_bias_require_grad, ds, None, rng_sate)
 
 @impl(fa2_lib, 'bwd', "Meta")
 def meta_fftconv_bwd(
@@ -114,11 +118,13 @@ def meta_fftconv_bwd(
     dq: torch.Tensor,
     dk: torch.Tensor,
     dv: torch.Tensor,
+    alibi_slopes: torch.Tensor,
     dropout_p: float,
     softmax_scale: float,
     causal: bool,
     window_size_left: int,
     window_size_right: int,
+    deterministic: bool,
     attn_bias: torch.Tensor,
     attn_bias_require_grad: bool,
     ds: torch.Tensor,
