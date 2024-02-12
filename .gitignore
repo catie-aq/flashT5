@@ -3,3 +3,5 @@ flash-t5*/
 .vscode
 nightly/
 nohup.out
+.pytest_cache/
+.benchmarks/
