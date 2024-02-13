@@ -61,13 +61,16 @@ def meta_fa2_fwd(
     seqlen_k_rounded_8 = round_multiple(seqlen_k, 8)
     head_dim = round_multiple(head_dim_og, 8)
 
+    batch_size_bias = attn_bias.shape[0]
+    num_heads_bias = attn_bias.shape[1]
+
     return (torch.empty_strided((batch_size, seqlen_q, num_heads, head_dim_og),
                 (head_dim*num_heads*seqlen_q, head_dim*num_heads, head_dim, 1), device=q.device, dtype=q.dtype), # out
         q.new_empty((batch_size, seqlen_q, num_heads, head_dim)), # q_padded
         k.new_empty((batch_size, seqlen_k, num_heads, head_dim)), # k_padded
         v.new_empty((batch_size, seqlen_k, num_heads, head_dim)), # v_padded
         q.new_empty((batch_size, seqlen_q, num_heads, head_dim)), # out_padded
-        q.new_empty((batch_size, num_heads, seqlen_q_rounded_8, seqlen_k_rounded_8)) if attn_bias is not None else None, # attn_bias
+        q.new_empty((batch_size_bias, num_heads_bias, seqlen_q_rounded_8, seqlen_k_rounded_8)) if attn_bias is not None else None, # attn_bias
         q.new_empty((batch_size, num_heads, seqlen_q)), # softmax_lse
         q.new_empty((batch_size, num_heads, seqlen_q_rounded, seqlen_k_rounded)) if return_softmax and (dropout_p > 0) else None, # p
         torch.empty((2), dtype=torch.int64, device=q.device) # rng_state
@@ -144,14 +147,17 @@ def meta_fftconv_bwd(
     seqlen_q_round8 = round_multiple(seqlen_q, 8)
     seqlen_k_round8 = round_multiple(seqlen_k_orig, 8)
 
+    batch_size_bias = attn_bias.shape[0]
+    num_heads_bias = attn_bias.shape[1]
+
     return (torch.empty_strided((batch_size, seqlen_q, num_heads, head_dim_og),
                 (head_dim*num_heads*seqlen_q, head_dim*num_heads, head_dim, 1), device=q.device, dtype=q.dtype),
         torch.empty_strided((batch_size, seqlen_k_orig, num_heads, head_dim_og),
                 (head_dim*num_heads*seqlen_k, head_dim*num_heads, head_dim, 1), device=k.device, dtype=k.dtype),
         torch.empty_strided((batch_size, seqlen_k, num_heads, head_dim_og),
                 (head_dim*num_heads*seqlen_k, head_dim*num_heads, head_dim, 1), device=v.device, dtype=v.dtype),
-        torch.empty_strided((batch_size, num_heads, seqlen_q, seqlen_k_orig),
-                (num_heads*seqlen_q_round8*seqlen_k_round8, seqlen_q_round8*seqlen_k_round8, seqlen_q_round8, 1), device=v.device, dtype=v.dtype)
+        torch.empty_strided((batch_size_bias, num_heads_bias, seqlen_q, seqlen_k_orig),
+                (num_heads_bias*seqlen_q_round8*seqlen_k_round8, seqlen_q_round8*seqlen_k_round8, seqlen_q_round8, 1), device=v.device, dtype=v.dtype)
                 if attn_bias_require_grad else None,
         q.new_empty((batch_size, num_heads, seqlen_q_rounded))
         )
