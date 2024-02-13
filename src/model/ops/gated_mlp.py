@@ -334,6 +334,7 @@ def gated_matmul_bwd_input(
     stride_dom, stride_im,
     stride_wn,
     # Meta-parameters
+    dtype: tl.constexpr,
     BLOCK_M: tl.constexpr, GROUP_M: tl.constexpr,
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
     IS_EVEN_MNK: tl.constexpr
@@ -434,11 +435,10 @@ def gated_matmul_bwd_input(
         order=(1, 0),
     )
 
-    ref = tl.load(w1)
     if IS_EVEN_MNK:
-        tl.store(dx_ptrs, acc_dx.to(ref.dtype))
+        tl.store(dx_ptrs, acc_dx.to(dtype))
     else:
-        tl.store(dx_ptrs, acc_dx.to(ref.dtype), boundary_check=(0, 1))
+        tl.store(dx_ptrs, acc_dx.to(dtype), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -452,6 +452,7 @@ def gated_matmul_bwd_weights(
     stride_dom, stride_im,
     stride_wn,
     # Meta-parameters
+    dtype: tl.constexpr,
     BLOCK_M: tl.constexpr, GROUP_N: tl.constexpr,
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
     IS_EVEN_MNK: tl.constexpr
@@ -555,11 +556,11 @@ def gated_matmul_bwd_weights(
     )
 
     if IS_EVEN_MNK:
-        tl.store(dw1_ptrs, acc_dw1.to(ref.dtype))
-        tl.store(dw2_ptrs, acc_dw2.to(ref.dtype))
+        tl.store(dw1_ptrs, acc_dw1.to(dtype))
+        tl.store(dw2_ptrs, acc_dw2.to(dtype))
     else:
-        tl.store(dw1_ptrs, acc_dw1.to(ref.dtype), boundary_check=(0, 1))
-        tl.store(dw2_ptrs, acc_dw2.to(ref.dtype), boundary_check=(0, 1))
+        tl.store(dw1_ptrs, acc_dw1.to(dtype), boundary_check=(0, 1))
+        tl.store(dw2_ptrs, acc_dw2.to(dtype), boundary_check=(0, 1))
 
 
 class GatedMLP(torch.autograd.Function):
@@ -629,7 +630,7 @@ class GatedMLP(torch.autograd.Function):
     @staticmethod
     @custom_bwd
     def backward(ctx, dout):
-        BLOCK_M = 128
+        BLOCK_M = 64
         BLOCK_N = 64
         BLOCK_K = 64
         GROUP_M = 8
@@ -659,6 +660,7 @@ class GatedMLP(torch.autograd.Function):
             M, N,
             dout_.stride(0),
             # Meta-parameters
+            tl_dtype,
             BLOCK_M, BLOCK_N,
             ctx.use_gelu,
             ctx.is_even_nmk)
@@ -671,13 +673,14 @@ class GatedMLP(torch.autograd.Function):
             M, N, K,
             dout_.stride(0), x_.stride(0),
             w1.stride(0),
+            tl_dtype,
             BLOCK_M, GROUP_M,
             BLOCK_N, BLOCK_K,
             ctx.is_even_nmk)
 
         # reorder sizes
         BLOCK_M = 64
-        BLOCK_N = 128
+        BLOCK_N = 64
         grid = (triton.cdiv(N, BLOCK_N) * triton.cdiv(K, BLOCK_K),)
         gated_matmul_bwd_weights[grid](
             x_,
@@ -686,6 +689,7 @@ class GatedMLP(torch.autograd.Function):
             M, N, K,
             y1_grad.stride(0), x_.stride(0),
             dw1.stride(0),
+            tl_dtype,
             BLOCK_M, GROUP_M,
             BLOCK_N, BLOCK_K,
             ctx.is_even_nmk)

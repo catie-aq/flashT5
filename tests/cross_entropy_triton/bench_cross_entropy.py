@@ -10,7 +10,7 @@ from src.model.ops.cross_entropy_loss import fast_cross_entropy_loss
 BATCH, N_CTX, LOGITS = 4, 512, 32768
 configs = []
 for mode in ["fwd", "bwd"]:
-    for zloss_factor in [0.0, 1.0, 1.2]:
+    for zloss_factor in [0.0, 1.2]:
         for dtype in [torch.float32, torch.bfloat16, torch.float16]:
                 configs.append(
                     triton.testing.Benchmark(
@@ -53,8 +53,9 @@ def bench_cross_entropy(BATCH, N_CTX, LOGITS, mode, provider, dtype=torch.float1
         fn = lambda: fast_cross_entropy_loss(input, labels, z_loss_factor=zloss_factor, use_slow=True)
         if mode == "bwd":
             o = fn()
-            do = torch.randn_like(o)
-            fn = lambda: o.backward(do, retain_graph=True)
+            loss = o[0] + o[1]
+            do = torch.rand_like(loss)
+            fn = lambda: loss.backward(do, retain_graph=True)
         ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
     if provider == "triton":
         input, labels = get_tensors(BATCH, N_CTX, LOGITS, dtype)
@@ -62,12 +63,13 @@ def bench_cross_entropy(BATCH, N_CTX, LOGITS, mode, provider, dtype=torch.float1
         fn = lambda: fast_cross_entropy_loss(input, labels, z_loss_factor=zloss_factor, use_slow=False)
         if mode == "bwd":
             o = fn()
-            do = torch.randn_like(o)
-            fn = lambda: o.backward(do, retain_graph=True)
+            loss = o[0] + o[1]
+            do = torch.rand_like(loss)
+            fn = lambda: loss.backward(do, retain_graph=True)
         ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
 
     return ms
 
 
 # only works on post-Ampere GPUs right now
-bench_cross_entropy.run(save_path=".fast_cross_entropy", print_data=True)
+bench_cross_entropy.run(save_path=".fast_cross_entropy", print_data=False)

@@ -14,6 +14,7 @@
 #
 # Modifications to the orignal file
 # * add weights gradients
+# * remove the mask if size is a power of 2
 
 import triton
 import triton.language as tl
@@ -42,7 +43,8 @@ def _rms_layernorm_forward(
     W, W_row_stride,
     r, r_row_stride,
     n_cols, eps,
-    BLOCK_SIZE : tl.constexpr
+    BLOCK_SIZE : tl.constexpr,
+    IS_EVEN_X: tl.constexpr
 ):
     """
         Fast RMS Layernorm kernel
@@ -57,8 +59,12 @@ def _rms_layernorm_forward(
     X += row_idx * X_row_stride
     r += row_idx * r_row_stride
 
-    X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
-    W_row = tl.load(W + col_offsets, mask = mask, other = 0)
+    if IS_EVEN_X:
+        X_row = tl.load(X + col_offsets).to(tl.float32)
+        W_row = tl.load(W + col_offsets)
+    else:
+        X_row = tl.load(X + col_offsets, mask=mask, other=0).to(tl.float32)
+        W_row = tl.load(W + col_offsets, mask=mask, other=0)
 
     row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
     inv_var = tl.math.rsqrt(row_var + eps)
@@ -66,7 +72,11 @@ def _rms_layernorm_forward(
     normed = X_row * inv_var
     normed = normed.to(W_row.dtype) # Exact copy from HF
     output = normed * W_row
-    tl.store(Y + col_offsets, output, mask = mask)
+
+    if IS_EVEN_X:
+        tl.store(Y + col_offsets, output)
+    else:
+        tl.store(Y + col_offsets, output, mask=mask)
 
 
 @triton.jit
@@ -79,6 +89,7 @@ def _rms_layernorm_backward(
     dX, dX_row_stride,
     n_cols, eps,
     BLOCK_SIZE : tl.constexpr,
+    IS_EVEN_X: tl.constexpr
 ):
     """
         Fast RMS Layernorm kernel for the backward pass
@@ -95,9 +106,14 @@ def _rms_layernorm_backward(
     dW += row_idx * dW_row_stride
     dX += row_idx * dX_row_stride
 
-    dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
-    X_row  = tl.load(X  + col_offsets, mask = mask, other = 0).to(tl.float32)
-    W_row  = tl.load(W  + col_offsets, mask = mask, other = 0).to(tl.float32)
+    if IS_EVEN_X:
+        dY_row = tl.load(dY + col_offsets).to(tl.float32)
+        X_row  = tl.load(X  + col_offsets).to(tl.float32)
+        W_row  = tl.load(W  + col_offsets).to(tl.float32)
+    else:
+        dY_row = tl.load(dY + col_offsets, mask=mask, other=0).to(tl.float32)
+        X_row  = tl.load(X  + col_offsets, mask=mask, other=0).to(tl.float32)
+        W_row  = tl.load(W  + col_offsets, mask=mask, other=0).to(tl.float32)
 
     # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
@@ -107,8 +123,13 @@ def _rms_layernorm_backward(
     dY_W = dY_row * W_row
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
-    tl.store(dW + col_offsets, dW_row, mask=mask)
-    tl.store(dX + col_offsets, output, mask = mask)
+
+    if IS_EVEN_X:
+        tl.store(dW + col_offsets, dW_row)
+        tl.store(dX + col_offsets, output)
+    else:
+        tl.store(dW + col_offsets, dW_row, mask=mask)
+        tl.store(dX + col_offsets, output, mask=mask)
 
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
@@ -120,8 +141,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda")
-        r = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
+        Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device="cuda")
+        r = torch.empty(n_rows, dtype=torch.float32, device="cuda")
 
         _rms_layernorm_forward[(n_rows,)](
             Y, Y.stride(0),
@@ -129,8 +150,9 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             W, W.stride(0),
             r, r.stride(0),
             n_cols, eps,
-            BLOCK_SIZE = BLOCK_SIZE,
-            num_warps  = num_warps
+            BLOCK_SIZE=BLOCK_SIZE,
+            IS_EVEN_X=((n_cols % BLOCK_SIZE) == 0),
+            num_warps=num_warps
         )
 
         ctx.eps = eps
@@ -157,8 +179,9 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             dW, dW.stride(0),
             dX, dX.stride(0),
             n_cols, ctx.eps,
-            BLOCK_SIZE = ctx.BLOCK_SIZE,
-            num_warps  = ctx.num_warps,
+            BLOCK_SIZE=ctx.BLOCK_SIZE,
+            IS_EVEN_X=((n_cols % ctx.BLOCK_SIZE) == 0),
+            num_warps=ctx.num_warps,
         )
         dX = dX.view(*shape)
         return dX, dW.sum(0), None

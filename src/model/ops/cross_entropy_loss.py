@@ -40,7 +40,8 @@ def _cross_entropy_forward(logits_ptr, logits_row_stride,
                            lse_ptr,
                            labels_ptr,
                            n_cols,
-                           BLOCK_SIZE: tl.constexpr,):
+                           BLOCK_SIZE: tl.constexpr,
+                           IS_EVEN: tl.constexpr):
     """
         Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
         Pi = exp(xi) / sum(exp(xi))
@@ -61,7 +62,11 @@ def _cross_entropy_forward(logits_ptr, logits_row_stride,
 
     # TODO: Fixup int32 locations to int64
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
+    if IS_EVEN:
+        logits = tl.load(logits_ptr + col_offsets).to(tl.float32)
+    else:
+        logits = tl.load(logits_ptr + col_offsets, mask=mask, other=-float("inf")).to(tl.float32)
+
     max_logits = tl.max(logits, 0)
 
     # Maximum stops overflow
@@ -80,13 +85,15 @@ pass
 
 @triton.jit
 def _cross_entropy_backward(logits_ptr, logits_row_stride,
+                            dinputs_ptr, dinputs_row_stride,
                             dloss_ptr,  dloss_row_stride,
                             dzloss_ptr, dzloss_row_stride,
                             lse_ptr,
                             labels_ptr,
                             n_cols,
                             BLOCK_SIZE: tl.constexpr,
-                            USE_Z_LOSS: tl.constexpr):
+                            USE_Z_LOSS: tl.constexpr,
+                            IS_EVEN: tl.constexpr):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
         dC/dx = d/dx (y * log[sum(exp(x))] - x * y)
@@ -106,6 +113,7 @@ def _cross_entropy_backward(logits_ptr, logits_row_stride,
     row_idx = tl.program_id(0)
 
     logits_ptr += row_idx * logits_row_stride
+    dinputs_ptr += row_idx * dinputs_row_stride
     dloss_ptr  += row_idx *  dloss_row_stride
     dzloss_ptr  += row_idx *  dzloss_row_stride
     col_offsets = tl.arange(0, BLOCK_SIZE)
@@ -120,7 +128,11 @@ def _cross_entropy_backward(logits_ptr, logits_row_stride,
         dloss = 0.0
         dzloss = 0.0
 
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = 0).to(tl.float32)
+    if IS_EVEN:
+        logits = tl.load(logits_ptr + col_offsets).to(tl.float32)
+    else:
+        logits = tl.load(logits_ptr + col_offsets, mask=mask, other=0).to(tl.float32)
+
     lse = tl.load(lse_ptr + row_idx)
     probs = tl.exp(logits - lse)
 
@@ -140,7 +152,10 @@ def _cross_entropy_backward(logits_ptr, logits_row_stride,
         softmax_output = numerator / denominator
         din += softmax_output * dzloss
 
-    tl.store(logits_ptr + col_offsets, din, mask = mask)
+    if IS_EVEN:
+        tl.store(dinputs_ptr + col_offsets, din)
+    else:
+        tl.store(dinputs_ptr + col_offsets, din, mask=mask)
 pass
 
 
@@ -159,6 +174,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             labels,
             n_cols,
             BLOCK_SIZE = BLOCK_SIZE,
+            IS_EVEN=((n_cols % BLOCK_SIZE) == 0),
             num_warps  = num_warps,
         )
 
@@ -174,8 +190,11 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         logits, logsumexp, labels = ctx.saved_tensors
         n_rows, n_cols = logits.shape
 
+        dinputs = torch.empty_like(logits)
+
         _cross_entropy_backward[(n_rows,)](
             logits,   logits.stride(0),
+            dinputs, dinputs.stride(0),
             dlosses, dlosses.stride(0),
             dlogsumexp, dlogsumexp.stride(0),
             logsumexp,
@@ -183,9 +202,10 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             n_cols,
             BLOCK_SIZE = ctx.BLOCK_SIZE,
             USE_Z_LOSS = (ctx.z_loss_factor != 0.0),
+            IS_EVEN=((n_cols % ctx.BLOCK_SIZE) == 0),
             num_warps  = ctx.num_warps,
         )
-        return logits, None, None,
+        return dinputs, None, None,
     pass
 pass
 
