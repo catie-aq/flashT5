@@ -15,7 +15,8 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
                 batch_size: int,
                 denoiser_list: List,
                 denoiser_proportions: List,
-                causal: bool = False):
+                causal: bool = False,
+                random_chunk: bool = True):
 
         super().__init__()
 
@@ -37,6 +38,7 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
         self.denoiser_optimal_len = [self.compute_input_and_target_lengths(max_length-max_prefix_len, x["r"], x["mu"]) for x in self.denoiser_list]
 
         self.causal = causal
+        self.random_chunk = random_chunk
 
     def __call__(self, examples: List[Dict[str, np.ndarray]]) -> BatchEncoding:
 
@@ -50,8 +52,11 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
         for i, x in enumerate(examples):
             max_len = self.denoiser_optimal_len[denoisers_sample[i]][0]
             if x["length"] > max_len:
-                new_input_ids = x["input_ids"][:, :max_len]
-                new_input_ids = x["input_ids"][:, :max_len]
+                start = 0
+                if self.random_chunk:
+                    start = np.random.randint(0, x["length"] - max_len)
+                new_input_ids = x["input_ids"][:, start:start+max_len]
+                new_input_ids = x["input_ids"][:, start:start+max_len]
                 new_length = np.array(max_len)
                 truncated_examples.append({"input_ids": new_input_ids, "length": new_length})
             else:
