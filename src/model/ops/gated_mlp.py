@@ -5,6 +5,18 @@ import triton.language as tl
 
 from torch.cuda.amp import custom_bwd, custom_fwd
 
+def to_tl_dtype(input):
+    if input == torch.float32:
+        return tl.float32
+    elif input == torch.float16:
+        return tl.float16
+    elif input == torch.bfloat16:
+        return tl.bfloat16
+    elif input == torch.int64:
+        return tl.int64
+    else:
+        raise ValueError(f"Unable to convert the given input: '{input}'.")
+
 ## Activation function from https://github.com/facebookresearch/xformers/blob/main/xformers/triton/k_activations.py
 
 _kAlpha = math.sqrt(2.0 / math.pi)
@@ -79,6 +91,7 @@ def gated_matmul_fwd(
     stride_im,
     stride_wn,
     # Meta-parameters
+    dtype: tl.constexpr,
     BLOCK_M: tl.constexpr, GROUP_M: tl.constexpr,
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
     USE_GELU: tl.constexpr,
@@ -140,9 +153,6 @@ def gated_matmul_fwd(
         order=(0, 1),
     )
 
-    # ugly trick to get the dtype - how to do ?
-    ref = tl.load(input)
-
     # initialize and iteratively update accumulator
     acc1 = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     acc2 = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
@@ -185,11 +195,11 @@ def gated_matmul_fwd(
         )
 
         if IS_EVEN_MNK:
-            tl.store(act_in_1_ptrs, acc1.to(ref.dtype))
-            tl.store(act_in_2_ptrs, acc2.to(ref.dtype))
+            tl.store(act_in_1_ptrs, acc1.to(dtype))
+            tl.store(act_in_2_ptrs, acc2.to(dtype))
         else:
-            tl.store(act_in_1_ptrs, acc1.to(ref.dtype), boundary_check=(0, 1))
-            tl.store(act_in_2_ptrs, acc2.to(ref.dtype), boundary_check=(0, 1))
+            tl.store(act_in_1_ptrs, acc1.to(dtype), boundary_check=(0, 1))
+            tl.store(act_in_2_ptrs, acc2.to(dtype), boundary_check=(0, 1))
 
     if USE_GELU:
         acc1 = gelu(acc1)
@@ -210,9 +220,9 @@ def gated_matmul_fwd(
     )
 
     if IS_EVEN_MNK:
-        tl.store(out_ptrs, acc.to(ref.dtype))
+        tl.store(out_ptrs, acc.to(dtype))
     else:
-        tl.store(out_ptrs, acc.to(ref.dtype), boundary_check=(0, 1))
+        tl.store(out_ptrs, acc.to(dtype), boundary_check=(0, 1))
 
 @triton.jit
 def gated_matmul_bwd_ygrad(
@@ -222,6 +232,7 @@ def gated_matmul_bwd_ygrad(
     M, N,
     stride_dom,
     # Meta-parameters
+    dtype: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     USE_GELU: tl.constexpr,
@@ -266,8 +277,6 @@ def gated_matmul_bwd_ygrad(
         order=(1, 0),
     )
 
-    ref = tl.load(act_input_1 + tl.arange(0, 1))
-
     if IS_EVEN_MNK:
         dout_blk = tl.load(dout_block_ptr)
         actin_1_blk = tl.load(actin_1_block_ptr)
@@ -307,11 +316,11 @@ def gated_matmul_bwd_ygrad(
     )
 
     if IS_EVEN_MNK:
-        tl.store(y1_grad_ptrs, actin_act_grad.to(ref.dtype))
-        tl.store(y2_grad_ptrs, actin_act.to(ref.dtype))
+        tl.store(y1_grad_ptrs, actin_act_grad.to(dtype))
+        tl.store(y2_grad_ptrs, actin_act.to(dtype))
     else:
-        tl.store(y1_grad_ptrs, actin_act_grad.to(ref.dtype), boundary_check=(0, 1))
-        tl.store(y2_grad_ptrs, actin_act.to(ref.dtype), boundary_check=(0, 1))
+        tl.store(y1_grad_ptrs, actin_act_grad.to(dtype), boundary_check=(0, 1))
+        tl.store(y2_grad_ptrs, actin_act.to(dtype), boundary_check=(0, 1))
 
 
 @triton.jit
@@ -586,6 +595,8 @@ class GatedMLP(torch.autograd.Function):
 
         out = torch.empty((M, N), device=x.device, dtype=x.dtype)
 
+        tl_dtype = to_tl_dtype(x.dtype)
+
         act_input_1, act_input_2 = None, None
         if SAVE_ACT_IN:
             act_input_1 = torch.empty_like(out)
@@ -599,10 +610,11 @@ class GatedMLP(torch.autograd.Function):
             M, N, K,
             out.stride(0), x_.stride(0),
             w1.stride(0),
+            tl_dtype,
             BLOCK_M, GROUP_M, BLOCK_N, BLOCK_K,
             use_gelu,
             SAVE_ACT_IN,
-            IS_EVEN_MNK
+            IS_EVEN_MNK,
         )
 
         ctx.save_for_backward(x_, w1, w2, act_input_1, act_input_2)
@@ -626,6 +638,8 @@ class GatedMLP(torch.autograd.Function):
 
         M, K = x_.shape
         N, K = w1.shape
+
+        tl_dtype = to_tl_dtype(x_.dtype)
 
         '''
         din = torch.empty_like(x_)
@@ -692,6 +706,7 @@ class GatedMLP(torch.autograd.Function):
             M, N,
             dout_.stride(0),
             # Meta-parameters
+            tl_dtype,
             BLOCK_M, BLOCK_N,
             ctx.use_gelu,
             ctx.is_even_nmk)
