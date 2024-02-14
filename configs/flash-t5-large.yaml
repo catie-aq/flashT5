@@ -24,10 +24,10 @@ model_args:
   relative_attention_max_distance: 128
   relative_attention_num_buckets: 32
   tie_word_embeddings: false
-  use_flash_attention: "triton"
-  use_triton_layernorm: False
-  use_triton_crossentropy: False
-  use_triton_gated_mlp: False
+  use_flash_attention: "fa2"
+  use_triton_layernorm: true
+  use_triton_crossentropy: true
+  use_triton_gated_mlp: false
   use_glu_mlp: true
   use_randomized_position_encoding: false
   z_loss: 0.0001
@@ -69,7 +69,7 @@ training_args:
   save_steps: 2000
   save_strategy: steps
   seed: 42
-  torch_compile: true
+  torch_compile: false
   warmup_ratio: 0.0
   warmup_steps: 10000
   weight_decay: 0.0

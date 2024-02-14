@@ -24,14 +24,14 @@ model_args:
   relative_attention_max_distance: 128
   relative_attention_num_buckets: 32
   tie_word_embeddings: false
-  use_flash_attention: "triton"
+  use_flash_attention: "fa2"
   use_glu_mlp: true
   use_randomized_position_encoding: false
   z_loss: 0.0001
-  use_triton_layernorm: False
-  use_triton_crossentropy: False
-  use_triton_gated_mlp: False
-  use_gelu_act: True
+  use_triton_layernorm: true
+  use_triton_crossentropy: true
+  use_triton_gated_mlp: false
+  use_gelu_act: true
 training_args:
   adafactor: false
   adam_beta1: 0.9
