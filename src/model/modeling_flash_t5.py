@@ -216,7 +216,7 @@ class FlashT5LayerSelfAttention(nn.Module):
     def __init__(self, config, has_relative_attention_bias=False):
         super().__init__()
         self.self_attention = FlashT5Attention(config, has_relative_attention_bias=has_relative_attention_bias)
-        self.layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon, use_triton_layernorm=config.use_triton_layernorm)
         self.dropout = nn.Dropout(config.dropout_rate)
 
     def forward(
@@ -240,7 +240,7 @@ class FlashT5LayerCrossAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.cross_attention = FlashT5Attention(config, has_relative_attention_bias=False)
-        self.layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon, use_triton_layernorm=config.use_triton_layernorm)
         self.dropout = nn.Dropout(config.dropout_rate)
 
     def forward(
@@ -323,7 +323,7 @@ class FlashT5Stack(nn.Module, ModuleUtilsMixin):
             [FlashT5Block(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
         )
 
-        self.final_layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.final_layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon, use_triton_layernorm=config.use_triton_layernorm)
         self.dropout = nn.Dropout(config.dropout_rate)
 
     def forward(
