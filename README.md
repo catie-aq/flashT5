@@ -57,7 +57,7 @@ We see that below sequence length of 256, torch.compile does a pretty good job i
 start to pick up speed at 512 length and above. Note that the orignal model cannot accomodate larger than 512 sequence length despite using a 80G GPU !
 We tried to support both torch.compile and Flash Attention 2 to get the best of both worlds but the model is still buggy with PyTorch 2.2 (see the [Roadmap]()). You can find a torch compilable interface to Flash Attention 2 [here](src/utils/fa2_lib/).
 
-We can see a clear improvement in memory usage in our implementation for larger:
+We can see a clear improvement in memory usage in our implementation for larger batch sizes :
 
 ![](assets/benchmarks/mem-bfloat16-b8.png)  |  ![](assets/benchmarks/mem-bfloat16-b32.png)
 
@@ -100,5 +100,5 @@ We use the following repos and thanks the authors for this :
 - [Unsloth](https://github.com/unslothai/unsloth) for the Triton kernels of the cross-entropy and layernorm that we adapted to our usage.
 
 
-This work was support by the [Vaniila platform](http://vaniila.ai/).
+This work was support by the [Vaniila platform](http://vaniila.ai/).<br>
 [<img width="200" src="https://www.vaniila.ai/wp-content/uploads/2020/02/Vaniila_bleu_horizontal.png">](http://vaniila.ai/)
