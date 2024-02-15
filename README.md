@@ -1,21 +1,36 @@
 # FAT5 - A fast implementation of T5/UL2 with Flash Attention
 
-❗  Ecrire une petite introduction qui liste tout ce que fait ce dépôt.</span>
-
 **⚠ WARNING: This repository is not yet complete. Please refer to the roadmap part of this README. ⚠**
 
+FAT5 (for **F**l**A**sh**T5**) is an implementation of T5 in PyTorch with an UL2 objective optimized for GPGPU for both training and inference.
+It uses an experimental feature for using [Flash Attention (v2)](https://arxiv.org/abs/2307.08691) with relative position encoding biases
+that allow to train or finetune the model on longer sequence lengths than the original T5. It also has support for other positional embeddings such as RoPE or ALiBi.
 
-## General ideas that guided us
+## Motivation
 
-We worked on two main points - **optimizing memory bandwidth**, and **optimizing the use of Tensor Cores**:
-- <ins>Optimizing the memory bandwidth optimization</ins>
-  - We used the [Flash Attention (v2)](https://arxiv.org/abs/2307.08691) by Dao (2023).
-  This key technique consists in developing a CUDA kernel that can merge several limiting operations into one.
-  This can limit the need to copy large arrays into the GPU's global memory and then immediately reload them. This is now a common feature of transformer-decoder models.  
-  **In our view, it's very important to maintain an encoder-decoder architecture, in order to compress the information to its *substantifique moelle* before extending it again if required**.  
-  **Beyond NLP, we believe that such architectures are essential for audio, time series, or more generally in multimodality, where using a decoder seems sub-optimal to us compared to a sequence-by-sequence approach.**  
-  We therefore chose to work with a [T5](http://jmlr.org/papers/v21/20-074.html) by Raffel et al. (2020) and in practice with the [nanoT5](https://arxiv.org/abs/2309.02373) version by Nawrot (2023).
-  For pretext tasks during pre-training, we followed [UL2](https://arxiv.org/abs/2205.05131v3) by Tay et Dehghani (2022) with the following 7 tasks:
+While a lot of effort has been focused on optimizing decoder-only models, in many practical applications older architectures remains useful.
+We focus on [T5](http://jmlr.org/papers/v21/20-074.html) by Raffel et al. (2020), an encoder-decoder architecture exhibiting very decent performances for [instruction tuning](https://arxiv.org/pdf/2306.04757.pdf) or even sometimes outperforming much larger models when [finetuned](https://arxiv.org/pdf/2402.00841.pdf). Moreover its a natural architecture while considering [distillation](https://arxiv.org/abs/2305.02301) of much larger models.
+
+A critical limitation of this model is the length of the sequence that these model can deal with due to the quadratic size in memory. While this
+quadratic term cannot be removed without considering other form of attention (like for [LongT5](https://arxiv.org/abs/2112.07916)), it can
+still be alleviated to accomodate longer sequence lengths.
+
+## Our work
+
+We used the [nanoT5](https://github.com/PiotrNawrot/nanoT5?tab=readme-ov-file#cite) implementation (Nawrot, 2023)  as the base for our work.
+
+We worked on optimizing the core component of the model, witch is the attention part. We used the [Flash Attention (v2)](https://arxiv.org/abs/2307.08691) by Dao (2023) that optimize both the memory usage and the efficient use of Tensor Cores.
+
+While the original implementation does not support attention biases, we added this component in this [PR](https://github.com/Dao-AILab/flash-attention/pull/617). The implementation support full attention biases (batch_size, num_heads, seqlen_q, seqlen_k) or partial attention biases (1, 1, seqlen_q, seqlen_k). The latter allow us to remove the full size attention mask in the implementation of T5, while the causality can be enforced by masking in the kernel itself, thus reducing the memory by a factor of the size of batch for this tensor. This allow to fit larger batch sizes and thus increasing throughput during training.
+
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="./assets/FAT5_dark.gif">
+      <img alt="FAT5 animation" src="./assets/FAT5.gif">
+    </picture>
+
+Other parts of the architecture where optimized using [ad-hoc Triton kernels](src/model/ops/) for the cross-entropy (and z-loss) and layernorm. We also provide a [Triton implementation of Flash Attention 2](src/model/ops/flash_attention_v2_bias.py) supporting attention biases for those who do not like to recompile a custom patch for the flash attention. Beware that this implementation is not yet complete and only work when sequences in the encoder and decoder are of the same size (see the [Roadmap](#roadmap)).
+
+For pretext tasks during pre-training, we use the [UL2](https://arxiv.org/abs/2205.05131v3) mixture of denoisers by Tay et Dehghani (2022) with the following 7 tasks:
     ```py
     denoiser_list=[
     {"mu": 3.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[R]"},
@@ -27,81 +42,62 @@ We worked on two main points - **optimizing memory bandwidth**, and **optimizing
     {"mu": 64.0, "r": 0.5, "max_spans": max_token_length, "prefix": "[X]"}],
     denoiser_proportions=[0.165, 0.165, 0.34, 0.0825, 0.0825, 0.0825, 0.0825]
     ```
-    with `mu`: the span size, `r`: the % of masking in the span and `prefix`: the type of the pretext task (the meaning of the letters `[R]`, `[S]` and `[X]` is described [here](https://huggingface.co/google/ul2#mixture-of-denoisers)).  
-    As Flash Attention doesn't manage the (additive) attentional biases of the T5 model, we extended it to do so.
-  
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="./assets/FAT5_dark.gif">
-      <img alt="FAT5 animation" src="./assets/FAT5.gif">
-    </picture>
-  
-    The code for this part is available in this [GitHub repository](https://github.com/catie-aq/flashT5/tree/main/src/utils/fa2_lib) or in the [following PR](https://github.com/Dao-AILab/flash-attention/pull/617) on the official GitHub repository of the Flash Attention.
-    Note that we use absolute positional encoding.
-  - A simpler approach is to compile the models with `torch.compile`.
-  PyTorch then takes care of any possible merging, possibly by reordering operations.
-  See [documentation](https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html) for more details.
-  The aim is to eliminate "graph breaks", which are returns to an "eager" execution mode and have a negative impact on the operation's performance.
-  This means rewriting operations to avoid such breaks in the compilation graph, as well as avoiding (for the time being) dynamic tensor sizes that are poorly supported.  
-  These two methods are not easily compatible with PyTorch 2.1 (PyTorch 2.2 should make things simpler).
-  We based ourselves on this interesting [document](https://docs.google.com/document/d/1W--T6wz8IY8fOI0Vm8BF44PdBgs283QvpelJZWieQWQ/edit) to achieve this.
-  For more information, you can directly look at the [code](https://github.com/catie-aq/flash-NLP/blob/main/modeling/utils/fa2_lib/fa2_lib.py).
+    where `mu`: the span size, `r`: the % of masking in the span and `prefix`: the type of the pretext task (the meaning of the letters `[R]`, `[S]` and `[X]` is described [here](https://huggingface.co/google/ul2#mixture-of-denoisers)).
 
-- <ins>Optimizing the use of Tensor Core</ins>
-  - The first optimization is to use tensor sizes with certain multiples (of 8, 16, 32, 64, 128 in general).
-  We invite the reader to refer to Nvidia's documentation, in particular this [article](https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html#requirements-tc) and this [one](https://developer.nvidia.com/blog/optimizing-gpu-performance-tensor-cores/).  
-  In this logic, we trained a custom tokenizer of vocabulary size of 32,768 (2**15, following [this observation by Karpathy](https://twitter.com/karpathy/status/1621578354024677377)) trained on the first 1,000,000 rows of the French part of [OSCAR-2301](https://huggingface.co/datasets/oscar-corpus/OSCAR-2301).
-  - The second optimization consists of training the models in `bf16` or `fp16`.  
-  Recent GPUs make full use of reduced precision (with a 2x throughput factor compared to `fp32`).
-  `bf16` is only available on Ampere or higher architectures, but eliminates the need for [loss scaling](https://arxiv.org/abs/1710.03740) (Micikevicius et al. (2017)), which is generally required with fp16, thanks to its greater dynamic range (the exponent is coded on 8 bits, as with `fp32`).
-  In this logic, we train our models in `bf16`.
-  - The third optimization consists in limiting unnecessary calculations.  
-  When working with sequences, there is a natural tendency to pad a set of sequences in order to build batches. 
-  Padding tokens then generate unnecessary calculations. 
-  The first thing to do is to limit padding to the maximum sequence size and not to a maximum value. 
-  This is the [dynamic padding](https://huggingface.co/learn/nlp-course/chapter3/2?fw=pt#dynamic-padding) technique.
-  Then, padding tokens are generally left over with the dynamic padding technique. For the rest, you have two choices:
-    - either use a method of grouping data with similar sizes (for example, [this parameter](https://huggingface.co/docs/transformers/main_classes/trainer#transformers.TrainingArguments.group_by_length) in Hugging Face or [retrieving the sampler from Hugging Face](https://discuss.huggingface.co/t/how-to-implement-trainers-group-by-length-in-pytorch/9232) for PyTorch)
-    - or use the remaining tokens to concatenate different examples with a custom DataCollator.  
-  We've opted for the second option. See, for example our DataCollator [a mixture of denoisers](https://github.com/catie-aq/flashT5/blob/main/src/data/data_collator_ul2.py) (UL2).
-  - The fourth optimization is to use the right optimizer.  
-    Changing the optimizer from the initial implementation of the model can be judicious to accelerate model convergence (but deviates from the basic implementation and can therefore prevent the results of an initial paper from being reproduced).
-    Optimizers accelerate convergence by allowing large batch sizes, as in the case of [LAMB](https://arxiv.org/abs/1904.00962) by You et al. (2019), or by allowing the use of higher learning rates, as in [Sophia](https://arxiv.org/abs/2305.14342) by Liu et al. (2023).
-    More efficient versions of the optimizers can also be used.  
-    See the `fused` option in PyTorch's [Adam optimizer](https://pytorch.org/docs/stable/generated/torch.optim.Adam.html) or the optimizers available in [Apex](https://github.com/NVIDIA/apex).  
-    We've used [AdamWScale](https://github.com/catie-aq/flashT5/blob/main/src/utils/adamw_scaled.py) optimizer (`lr = 2e-2`, `betas = (0.9, 0.999)`, `eps = 1e-6`, `weight_decay = 0.0`) for a first test. We look forward to testing others.
-  - The final optimization consists in using less GPU memory.  
-  Some techniques exist to limit the use of GPU memory by the model, such as [gradient checkpointing](https://pytorch.org/docs/stable/checkpoint.html) or ZeRO-type methods implemented in [DeepSpeed](https://github.com/microsoft/DeepSpeed). By limiting the amount of memory used, we can use larger batch sizes and thus speed up the model.
+As there was no implementation available in PyTorch, we [added one](src/data/data_collator_ul2.py) and adapted a dynamic batching mechanism to reduce padding in the model.
 
+## Benchmarks
+
+The benchmarks were made on a A100 80G by comparing to the [original implementation of T5 v1.1](https://huggingface.co/docs/transformers/model_doc/t5v1.1) available on Hugging Face
+
+![](assets/benchmarks/fwd-bfloat16-b16.png)  |  ![](assets/benchmarks/bwd-bfloat16-b16.png)
+
+We see that below sequence length of 256, torch.compile does a pretty good job in optimizing the model while the Flash Attention
+start to pick up speed at 512 length and above. Note that the orignal model cannot accomodate larger than 512 sequence length despite using a 80G GPU !
+We tried to support both torch.compile and Flash Attention 2 to get the best of both worlds but the model is still buggy with PyTorch 2.2 (see the [Roadmap]()). You can find a torch compilable interface to Flash Attention 2 [here](src/utils/fa2_lib/).
+
+We can see a clear improvement in memory usage in our implementation for larger:
+
+![](assets/benchmarks/mem-bfloat16-b8.png)  |  ![](assets/benchmarks/mem-bfloat16-b32.png)
+
+## Pretraining
+
+We tested and trained the model on A100. It may or may not work with other GPUs.
+The training script is provided [here](train_flash_t5.py). It assumes that the dataset is already pretokenized and uses Hugging Face trainer.
+```python
+python train_flash_t5.py config/flash-t5-base.yaml
+```
+
+It support accelerate for out of the box distributed training.
+
+## Finetuning
+
+TBA
 
 ## Application to French
-We've used the codes of this repository to train two FAT5-UL2 in French.
-You can find the weights of the [base version](https://huggingface.co/CATIE-AQ/FAT5-base-UL2-fr) (305M parameters) and the [large version](https://huggingface.co/CATIE-AQ/FAT5-large-UL2-fr) (973M parameters) on [Hugging Face](https://huggingface.co/collections/CATIE-AQ/catie-french-fat5-65c0b4c12bc7789b319d8f72).  
-Models are pre-trained on the French part of the [CulturaX](https://huggingface.co/datasets/uonlp/CulturaX) corpus by Nguyen et al. (2023), i.e. 1,258 GB of text.  
-The base models were run on a single A 100; for 11 days for the base version and 30 days for the large version.  
-
-❗ AJOUTER LES PLOTS DES LOSS  
-
-❗ The models were then finetuned on BLABLA tasks.  
-A TERMINER  
-
-## Aplication to your own language
-
-❗ Faire un petit descriptif des lignes de codes à lancer pour entraîner un modèle sur une autre langue que le français.
+We've used the codes of this repository to pretrain two FAT5-UL2 in French, a base version (305M parameters) and a large version (973M parameters).
+The weights will soon be released.
+Models are pre-trained on the French part of the [CulturaX](https://huggingface.co/datasets/uonlp/CulturaX) corpus by Nguyen et al. (2023), i.e. 1,258 GB of text.
+The models were run on a single A100; for 11 days for the base version and 30 days for the large version.
 
 ## Roadmap
-We're not researchers or engineers working full-time on research and development projects. 
-As CATIE is a non-profit association, we have to work on other projects in order to bring in money and pay our salaries.  
-So think of this repository as a side project on which we'd like to make improvements, but for which we can't provide assiduous maintenance or development because of a lack of sanctuary hours. 
+Here is several following up work that we would like to make :
 
-❗ LISTER TOUT CE QUI SERA FAIT DE MANIERE CERTAINE + TOUT CE QUI SERAIT A FAIRE MAIS SANS GARANTIES QUE CELA SOIT FAIT FAUTE DE TEMPS
+- Fixing the compilation with PyTorch 2.2 : the current implentation doesn't support compiling together with the custom FA2 and Triton kernels.
 
-- Positional Enconding  
-Currently in this GitHub repository we provide the absolute positional encoding.
-We had also implemented the [ALIBI](https://arxiv.org/abs/2108.12409) one by Press et al. (2021) but it's now better to use the implementation since [added to the GitHub repository of the Flash Attention](https://github.com/Dao-AILab/flash-attention/pull/540).
-This is not a priority compared to the other tests we would like to perform described above, but if we have some time, we would like to test the [ROPE](https://arxiv.org/abs/2104.09864) encoding of Su et al. (2023)
+- Proper Triton Flash Attention 2 implementation : the current implentation doesn't support keys and queries of different length,
+we may use a more complete implementation of FA2 in Triton such as [this one](https://github.com/FlagOpen/FlagAttention).
 
 ## License
 [Apache-2.0 license](https://github.com/catie-aq/flashT5/tree/main?tab=Apache-2.0-1-ov-file#readme)
 
-## Citation
-❗ A AJOUTER UNE FOIS LE DOI GENERER SUR HF
+## Ackowledgment
+
+We use the following repos and thanks the authors for this :
+- [nanoT5](https://github.com/PiotrNawrot/nanoT5) for the optimizer.
+- [Flash attention](https://github.com/Dao-AILab/flash-attention) for the groundbreaking algorithm for computing attention.
+- [Unsloth](https://github.com/unslothai/unsloth) for the Triton kernels of the cross-entropy and layernorm that we adapted to our usage.
+
+
+This work was support by the [Vaniila platform](http://vaniila.ai/).
+[<img width="200" src="https://www.vaniila.ai/wp-content/uploads/2020/02/Vaniila_bleu_horizontal.png">](http://vaniila.ai/)
