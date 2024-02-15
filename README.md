@@ -31,7 +31,7 @@ While the original implementation does not support attention biases, we added th
 Other parts of the architecture where optimized using [ad-hoc Triton kernels](src/model/ops/) for the cross-entropy (and z-loss) and layernorm. We also provide a [Triton implementation of Flash Attention 2](src/model/ops/flash_attention_v2_bias.py) supporting attention biases for those who do not like to recompile a custom patch for the flash attention. Beware that this implementation is not yet complete and only work when sequences in the encoder and decoder are of the same size (see the [Roadmap](#roadmap)).
 
 For pretext tasks during pre-training, we use the [UL2](https://arxiv.org/abs/2205.05131v3) mixture of denoisers by Tay et Dehghani (2022) with the following 7 tasks:
-    ```py
+    ```python
     denoiser_list=[
     {"mu": 3.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[R]"},
     {"mu": 8.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[R]"},
