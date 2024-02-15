@@ -189,23 +189,20 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
             if self.pe_encoding is not None:
                 q, kv, _, position_bias = self.pe_encoding(q, kv, None)
 
-            if position_bias is None:
-                position_bias = torch.zeros(
-                    (1, 1, seq_length, key_length), device=q.device, dtype=q.dtype
-                 )
-
         if self.use_flash_attention == "fa2":
             output = flash_attn_kvpacked_func(q, kv, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
         elif self.use_flash_attention == "triton":
             assert self.p_dropout == 0.0, "Triton attention does not support dropout"
             q = q.permute(0, 2, 1, 3)
-            kv = kv.permute(2, 0, 3, 1, 4)
-            output = attention(q, kv[0], kv[1], position_bias, self.is_causal, self.softmax_scale)
+            kv = kv.permute(0, 3, 2, 1, 4)
+            k,v = kv.unbind(2)
+            output = attention(q, k, v, position_bias, self.is_causal, self.softmax_scale)
             output = output.permute(0, 2, 1, 3)
         else: # use flash attention
             q = q.permute(0, 2, 1, 3)
             kv = kv.permute(0, 3, 2, 1, 4)
-            output = attn_ref(q, kv[:, :, 0], kv[:, :, 1], position_bias, dropout_p=self.p_dropout, sm_scale=self.softmax_scale, causal=self.is_causal)
+            k,v = kv.unbind(2)
+            output = attn_ref(q, k, v, position_bias, dropout_p=self.p_dropout, sm_scale=self.softmax_scale, causal=self.is_causal)
             output = output.permute(0, 2, 1, 3)
 
         output = self.o(output.reshape(output.shape[0], output.shape[1], self.inner_dim))
