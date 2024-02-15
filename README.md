@@ -23,26 +23,27 @@ We worked on optimizing the core component of the model, witch is the attention 
 
 While the original implementation does not support attention biases, we added this component in this [PR](https://github.com/Dao-AILab/flash-attention/pull/617). The implementation support full attention biases (batch_size, num_heads, seqlen_q, seqlen_k) or partial attention biases (1, 1, seqlen_q, seqlen_k). The latter allow us to remove the full size attention mask in the implementation of T5, while the causality can be enforced by masking in the kernel itself, thus reducing the memory by a factor of the size of batch for this tensor. This allow to fit larger batch sizes and thus increasing throughput during training.
 
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="./assets/FAT5_dark.gif">
-      <img alt="FAT5 animation" src="./assets/FAT5.gif">
-    </picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/FAT5_dark.gif">
+  <img alt="FAT5 animation" src="./assets/FAT5.gif">
+</picture>
 
 Other parts of the architecture where optimized using [ad-hoc Triton kernels](src/model/ops/) for the cross-entropy (and z-loss) and layernorm. We also provide a [Triton implementation of Flash Attention 2](src/model/ops/flash_attention_v2_bias.py) supporting attention biases for those who do not like to recompile a custom patch for the flash attention. Beware that this implementation is not yet complete and only work when sequences in the encoder and decoder are of the same size (see the [Roadmap](#roadmap)).
 
 For pretext tasks during pre-training, we use the [UL2](https://arxiv.org/abs/2205.05131v3) mixture of denoisers by Tay et Dehghani (2022) with the following 7 tasks:
-    ```python
-    denoiser_list=[
-    {"mu": 3.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[R]"},
-    {"mu": 8.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[R]"},
-    {"mu": 4.0, "r": 0.0, "max_spans": 1, "prefix": "[S]"},
-    {"mu": 3.0, "r": 0.5, "max_spans": max_token_length, "prefix": "[X]"},
-    {"mu": 8.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[X]"},
-    {"mu": 64.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[X]"},
-    {"mu": 64.0, "r": 0.5, "max_spans": max_token_length, "prefix": "[X]"}],
-    denoiser_proportions=[0.165, 0.165, 0.34, 0.0825, 0.0825, 0.0825, 0.0825]
-    ```
-    where `mu`: the span size, `r`: the % of masking in the span and `prefix`: the type of the pretext task (the meaning of the letters `[R]`, `[S]` and `[X]` is described [here](https://huggingface.co/google/ul2#mixture-of-denoisers)).
+
+  ```python
+  denoiser_list=[
+  {"mu": 3.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[R]"},
+  {"mu": 8.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[R]"},
+  {"mu": 4.0, "r": 0.0, "max_spans": 1, "prefix": "[S]"},
+  {"mu": 3.0, "r": 0.5, "max_spans": max_token_length, "prefix": "[X]"},
+  {"mu": 8.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[X]"},
+  {"mu": 64.0, "r": 0.15, "max_spans": max_token_length, "prefix": "[X]"},
+  {"mu": 64.0, "r": 0.5, "max_spans": max_token_length, "prefix": "[X]"}],
+  denoiser_proportions=[0.165, 0.165, 0.34, 0.0825, 0.0825, 0.0825, 0.0825]
+  ```
+  where `mu`: the span size, `r`: the % of masking in the span and `prefix`: the type of the pretext task (the meaning of the letters `[R]`, `[S]` and `[X]` is described [here](https://huggingface.co/google/ul2#mixture-of-denoisers)).
 
 As there was no implementation available in PyTorch, we [added one](src/data/data_collator_ul2.py) and adapted a dynamic batching mechanism to reduce padding in the model.
 
