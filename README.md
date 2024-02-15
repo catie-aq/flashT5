@@ -25,7 +25,7 @@ While the original implementation does not support attention biases, we added th
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./assets/FAT5_dark.gif">
-  <img alt="FAT5 animation" src="./assets/FAT5.gif">
+  <img width=800px alt="FAT5 animation" src="./assets/FAT5.gif">
 </picture>
 
 Other parts of the architecture where optimized using [ad-hoc Triton kernels](src/model/ops/) for the cross-entropy (and z-loss) and layernorm. We also provide a [Triton implementation of Flash Attention 2](src/model/ops/flash_attention_v2_bias.py) supporting attention biases for those who do not like to recompile a custom patch for the flash attention. Beware that this implementation is not yet complete and only work when sequences in the encoder and decoder are of the same size (see the [Roadmap](#roadmap)).
