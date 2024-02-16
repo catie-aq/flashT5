@@ -29,6 +29,7 @@ def cuda_fa2_fwd(
     q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
     if attn_bias is not None:
         attn_bias = attn_bias.contiguous()
+        attn_bias = attn_bias.to(q.dtype)
 
     return flash_attn_2_cuda.fwd(q, k, v, out, alibi_slopes, dropout_p, softmax_scale, causal, window_size_left, window_size_right, attn_bias, return_softmax, None)
 
@@ -61,8 +62,9 @@ def meta_fa2_fwd(
     seqlen_k_rounded_8 = round_multiple(seqlen_k, 8)
     head_dim = round_multiple(head_dim_og, 8)
 
-    batch_size_bias = attn_bias.shape[0]
-    num_heads_bias = attn_bias.shape[1]
+    if attn_bias is not None:
+        batch_size_bias = attn_bias.shape[0]
+        num_heads_bias = attn_bias.shape[1]
 
     return (torch.empty_strided((batch_size, seqlen_q, num_heads, head_dim_og),
                 (head_dim*num_heads*seqlen_q, head_dim*num_heads, head_dim, 1), device=q.device, dtype=q.dtype), # out
@@ -107,6 +109,7 @@ def cuda_fa2_bwd(
     dout, q, k, v, out = dout.contiguous(), q.contiguous(), k.contiguous(), v.contiguous(), out.contiguous()
     if attn_bias is not None:
         attn_bias = attn_bias.contiguous()
+        attn_bias = attn_bias.to(q.dtype)
 
     return flash_attn_2_cuda.bwd(dout, q, k, v, out, softmax_lse, dq, dk, dv, alibi_slopes, dropout_p, softmax_scale, causal, window_size_left, window_size_right, deterministic, attn_bias, attn_bias_require_grad, ds, None, rng_sate)
 
@@ -147,8 +150,9 @@ def meta_fftconv_bwd(
     seqlen_q_round8 = round_multiple(seqlen_q, 8)
     seqlen_k_round8 = round_multiple(seqlen_k_orig, 8)
 
-    batch_size_bias = attn_bias.shape[0]
-    num_heads_bias = attn_bias.shape[1]
+    if attn_bias is not None:
+        batch_size_bias = attn_bias.shape[0]
+        num_heads_bias = attn_bias.shape[1]
 
     return (torch.empty_strided((batch_size, seqlen_q, num_heads, head_dim_og),
                 (head_dim*num_heads*seqlen_q, head_dim*num_heads, head_dim, 1), device=q.device, dtype=q.dtype),
