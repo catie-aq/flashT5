@@ -56,12 +56,19 @@ start to pick up speed at 512 length and above. Note that the orignal model cann
 
 **⚠ WARNING: To get the best of both worlds, we implemented an interface to use both Flash Attention 2 and torch.compile. You can find a torch compilable interface to Flash Attention 2 [here](src/utils/fa2_lib/). During the process, we encountered a bug with PyTorch 2.2 when d_model = num_heads * head_dim which is the case for the default configuration of T5. In this case, the gradients are incorrectly computed witch lead to exploding gradients during training. The forward pass is not affected for inference, but if you ever need to train the model, either disable torch.compile or change the d_model to avoid equality. We are currently investigating where this bug comes from (see the [Roadmap](#roadmap)). ⚠**
 
-![](assets/benchmarks/fwd-bfloat16-b16.png)  |  ![](assets/benchmarks/bwd-bfloat16-b16.png)
+
+<p float="left">
+  <img src="assets/benchmarks/fwd-bfloat16-b16.png" width="49%" />
+  <img src="assets/benchmarks/bwd-bfloat16-b16.png" width="49%" />
+</p>
 
 
 We can see a clear improvement in memory usage in our implementation for larger batch sizes :
 
-![](assets/benchmarks/mem-bfloat16-b8.png)  |  ![](assets/benchmarks/mem-bfloat16-b32.png)
+<p float="left">
+  <img src="assets/benchmarks/mem-bfloat16-b8.png" width="49%" />
+  <img src="assets/benchmarks/mem-bfloat16-b32.png" width="49%" />
+</p>
 
 ## Pretraining
 
