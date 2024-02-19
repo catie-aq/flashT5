@@ -2,7 +2,7 @@
 
 **⚠ WARNING: This repository is not yet complete. Please refer to the roadmap part of this README. ⚠**
 
-FAT5 (for **F**l**A**sh**T5**) is an implementation of T5 in PyTorch with an UL2 objective optimized for GPGPU for both training and inference.
+FAT5 (for **F**l**a**sh**T5**) is an implementation of T5 in PyTorch with an UL2 objective optimized for GPGPU for both training and inference.
 It uses an experimental feature for using [Flash Attention (v2)](https://arxiv.org/abs/2307.08691) with relative position encoding biases
 that allow to train or finetune the model on longer sequence lengths than the original T5. It also has support for other positional embeddings such as RoPE or ALiBi.
 
@@ -17,7 +17,7 @@ still be alleviated to accomodate longer sequence lengths.
 
 ## Our work
 
-We used the [nanoT5](https://github.com/PiotrNawrot/nanoT5?tab=readme-ov-file#cite) implementation (Nawrot, 2023)  as the base for our work.
+We used the [nanoT5](https://github.com/PiotrNawrot/nanoT5?tab=readme-ov-file#cite) implementation (Nawrot, 2023) as the base for our work.
 
 We worked on optimizing the core component of the model, witch is the attention part. We used the [Flash Attention (v2)](https://arxiv.org/abs/2307.08691) by Dao (2023) that optimize both the memory usage and the efficient use of Tensor Cores.
 
@@ -49,13 +49,15 @@ As there was no implementation available in PyTorch, we [added one](src/data/dat
 
 ## Benchmarks
 
-The benchmarks were made on a A100 80G by comparing to the [original implementation of T5 v1.1](https://huggingface.co/docs/transformers/model_doc/t5v1.1) available on Hugging Face
+The benchmarks were made on a A100 80G by comparing to the [original implementation of T5 v1.1](https://huggingface.co/docs/transformers/model_doc/t5v1.1) available on Hugging Face. The sequence length is the same for both the encoder and the decoder. Different sequence lengths for both parts are possible and even recommanded depending on the application.
+
+We see that below a sequence length of 256, torch.compile does a pretty good job in optimizing the model while the Flash Attention
+start to pick up speed at 512 length and above. Note that the orignal model cannot accomodate larger than 512 sequence length despite using a 80G GPU !
+
+**⚠ WARNING: To get the best of both worlds, we implemented an interface to use both Flash Attention 2 and torch.compile. You can find a torch compilable interface to Flash Attention 2 [here](src/utils/fa2_lib/). During the process, we encountered a bug with PyTorch 2.2 when d_model = num_heads * head_dim which is the case for the default configuration of T5. In this case, the gradients are incorrectly computed witch lead to exploding gradients during training. The forward pass is not affected for inference, but if you ever need to train the model, either disable torch.compile or change the d_model to avoid equality. We are currently investigating where this bug comes from (see the [Roadmap](#roadmap)). ⚠**
 
 ![](assets/benchmarks/fwd-bfloat16-b16.png)  |  ![](assets/benchmarks/bwd-bfloat16-b16.png)
 
-We see that below sequence length of 256, torch.compile does a pretty good job in optimizing the model while the Flash Attention
-start to pick up speed at 512 length and above. Note that the orignal model cannot accomodate larger than 512 sequence length despite using a 80G GPU !
-We tried to support both torch.compile and Flash Attention 2 to get the best of both worlds but the model is still buggy with PyTorch 2.2 (see the [Roadmap]()). You can find a torch compilable interface to Flash Attention 2 [here](src/utils/fa2_lib/).
 
 We can see a clear improvement in memory usage in our implementation for larger batch sizes :
 
@@ -79,15 +81,17 @@ TBA
 We've used the codes of this repository to pretrain two FAT5-UL2 in French, a base version (305M parameters) and a large version (973M parameters).
 The weights will soon be released.
 Models are pre-trained on the French part of the [CulturaX](https://huggingface.co/datasets/uonlp/CulturaX) corpus by Nguyen et al. (2023), i.e. 1,258 GB of text.
-The models were run on a single A100; for 11 days for the base version and 30 days for the large version.
+The models were run on a single A100 80G for 11 days for the base version and two A100 80G 25 days for the large version.
 
 ## Roadmap
 Here is several following up work that we would like to make :
 
-- Fixing the compilation with PyTorch 2.2 : the current implentation doesn't support compiling together with the custom FA2 and Triton kernels.
+- Fixing the compilation with PyTorch 2.2 : the current implentation doesn't support compiling with d_model = num_heads * head_dim.
 
 - Proper Triton Flash Attention 2 implementation : the current implentation doesn't support keys and queries of different length,
 we may use a more complete implementation of FA2 in Triton such as [this one](https://github.com/FlagOpen/FlagAttention).
+
+- We also are revisiting the encoder-decoder architecture using subquadratic operators to replace the attention. Stay tuned for more information about this.
 
 ## License
 [Apache-2.0 license](https://github.com/catie-aq/flashT5/tree/main?tab=Apache-2.0-1-ov-file#readme)
@@ -95,10 +99,12 @@ we may use a more complete implementation of FA2 in Triton such as [this one](ht
 ## Ackowledgment
 
 We use the following repos and thanks the authors for this :
-- [nanoT5](https://github.com/PiotrNawrot/nanoT5) for the optimizer.
+- [nanoT5](https://github.com/PiotrNawrot/nanoT5) for the simple implementation and the optimizer.
 - [Flash attention](https://github.com/Dao-AILab/flash-attention) for the groundbreaking algorithm for computing attention.
+- [Hugging Face](https://github.com/huggingface/transformers) for their excellent library.
 - [Unsloth](https://github.com/unslothai/unsloth) for the Triton kernels of the cross-entropy and layernorm that we adapted to our usage.
 
 
 This work was support by the [Vaniila platform](http://vaniila.ai/).<br>
 [<img width="200" src="https://www.vaniila.ai/wp-content/uploads/2020/02/Vaniila_bleu_horizontal.png">](http://vaniila.ai/)
+
