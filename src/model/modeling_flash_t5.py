@@ -14,13 +14,32 @@ from transformers.modeling_utils import ModuleUtilsMixin
 from transformers.modeling_outputs import ModelOutput
 from transformers import PreTrainedModel
 
-from .ops.rms_norm import fast_rms_layernorm
-from .ops.cross_entropy_loss import fast_cross_entropy_loss
-from .ops.flash_attention_v2_bias import attention
-from .ops.gated_mlp import gated_mlp
+try:
+    from .ops.rms_norm import fast_rms_layernorm
+except ImportError:
+    fast_rms_layernorm = None
 
-#from flash_attn import flash_attn_kvpacked_func
-from ..utils.fa2_lib.fa2_compilable import flash_attn_kvpacked_func
+try:
+    from .ops.cross_entropy_loss import fast_cross_entropy_loss
+except ImportError:
+    fast_cross_entropy_loss = None
+
+try:
+    from .ops.flash_attention_v2_bias import attention as flash_attention_triton
+except ImportError:
+    fast_cross_entropy_loss = None
+
+try:
+    from .ops.gated_mlp import gated_mlp
+except ImportError:
+    gated_mlp = None
+
+try:
+    #from flash_attn import flash_attn_kvpacked_func
+    from ..utils.fa2_lib.fa2_compilable import flash_attn_kvpacked_func
+except ImportError:
+    flash_attn_kvpacked_func = None
+
 from ..utils.attn_ref import attn_ref
 
 from .configuration_flash_t5 import FlashT5Config
@@ -38,12 +57,50 @@ class Seq2SeqLMOutput(ModelOutput):
     logits: torch.FloatTensor = None
     encoder_outputs: EncoderOutput = None
 
+class FlashT5CrossEntropyLoss(nn.Module):
+    def __init__(self, z_loss_factor=0.0, label_smoothing=0.0, use_triton_crossentropy=False):
+
+        super().__init__()
+
+        if use_triton_crossentropy and fast_cross_entropy_loss is None:
+            raise ImportError("fast_cross_entropy_loss is not available")
+
+        self.use_triton_crossentropy = use_triton_crossentropy
+        self.z_loss_factor = z_loss_factor
+
+        self.cross_entropy_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
+    def compute_zloss(self, logits: torch.Tensor, z_loss: float):
+        logits_sum = torch.logsumexp(logits, dim=-1, keepdim=True)
+        log_z = torch.squeeze(logits_sum, axis=-1)
+        total_z_loss = z_loss * torch.square(log_z)
+        return total_z_loss.mean()
+
+    def forward(self, logits, labels):
+
+        if self.use_triton_crossentropy:
+            return fast_cross_entropy_loss(logits, labels, z_loss_factor=self.z_loss_factor)
+
+        # use standard method
+        batch, seq_len, d = logits.shape
+        logits_flatten = logits.float().view(batch*seq_len, d) # Must cast to float32 for numerical stability
+        labels_flatten = labels.view(-1)
+        loss = self.cross_entropy_loss(logits_flatten, labels_flatten)
+        z_loss = 0.0
+        if self.z_loss_factor != 0.0:
+            z_loss = self.compute_zloss(logits_flatten[labels_flatten != -100],
+                                   z_loss=self.z_loss_factor)
+        return loss, z_loss
+
 class FlashT5LayerNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6, use_triton_layernorm=False):
         """
         Construct a layernorm module in the T5 style. No bias and no subtraction of mean.
         """
         super().__init__()
+
+        if use_triton_layernorm and fast_rms_layernorm is None:
+            raise ImportError("fast_rms_layernorm is not available")
 
         self.use_triton_layernorm = use_triton_layernorm
         self.weight = nn.Parameter(torch.ones(hidden_size))
@@ -97,6 +154,8 @@ class FlashT5DenseGatedAct(nn.Module):
         self.act = torch.nn.GELU(approximate='tanh') if config.use_gelu_act else torch.nn.ReLU()
 
         self.use_triton_gated_mlp = config.use_triton_gated_mlp
+        if self.use_triton_gated_mlp and gated_mlp is None:
+            raise ImportError("gated_mlp is not available")
         self.use_gelu_act = config.use_gelu_act
 
     def forward(self, hidden_states):
@@ -149,6 +208,11 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         self.max_sequence_length = config.max_sequence_length
         self.softmax_scale = 1.0/math.sqrt(self.n_heads)
 
+        if self.use_flash_attention == "triton" and flash_attention_triton is None:
+            raise ImportError("flash_attention_triton is not available")
+        elif self.use_flash_attention == "fa2" and flash_attn_kvpacked_func is None:
+            raise ImportError("Flash Attention 2 is not available")
+
         if self.position_encoding_type == "ALiBi" and has_relative_attention_bias:
             # build alibi matrix with an upper bound on seq length
             self.pe_encoding = ALiBiPositionalEncoding(self.max_sequence_length, self.n_heads, config.alibi_mode, config.use_randomized_position_encoding)
@@ -184,28 +248,26 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         q = q.view(batch_size, seq_length, self.n_heads, self.key_value_proj_dim)
         kv = kv.view(batch_size, key_length, 2, self.n_heads, self.key_value_proj_dim)
 
-        if position_bias is None:
-
-            if self.pe_encoding is not None:
-                q, kv, _, position_bias = self.pe_encoding(q, kv, None)
+        if position_bias is None and self.pe_encoding is not None:
+            q, kv, _, position_bias = self.pe_encoding(q, kv, None)
 
         if self.use_flash_attention == "fa2":
             output = flash_attn_kvpacked_func(q, kv, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
         elif self.use_flash_attention == "triton":
             assert self.p_dropout == 0.0, "Triton attention does not support dropout"
             q = q.permute(0, 2, 1, 3)
-            kv = kv.permute(0, 3, 2, 1, 4)
-            k,v = kv.unbind(2)
-            output = attention(q, k, v, position_bias, self.is_causal, self.softmax_scale)
+            kv = kv.permute(2, 0, 3, 1, 4)
+            k,v = kv.unbind(0)
+            output = flash_attention_triton(q, k, v, position_bias, self.is_causal, self.softmax_scale)
             output = output.permute(0, 2, 1, 3)
         else: # use flash attention
             q = q.permute(0, 2, 1, 3)
-            kv = kv.permute(0, 3, 2, 1, 4)
-            k,v = kv.unbind(2)
+            kv = kv.permute(2, 0, 3, 1, 4)
+            k,v = kv.unbind(0)
             output = attn_ref(q, k, v, position_bias, dropout_p=self.p_dropout, sm_scale=self.softmax_scale, causal=self.is_causal)
             output = output.permute(0, 2, 1, 3)
 
-        output = self.o(output.reshape(output.shape[0], output.shape[1], self.inner_dim))
+        output = self.o(output.view(output.shape[0], output.shape[1], self.inner_dim))
         return (output, position_bias)
 
 
@@ -397,7 +459,7 @@ class FlashT5PreTrainedModel(PreTrainedModel):
         elif isinstance(module, (FlashT5ForConditionalGeneration)):
             module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
             if hasattr(module, "lm_head") and not self.config.tie_word_embeddings:
-                module.lm_head.weight.data.normal_(mean=0.0, std=factor * 1.0)
+                module.lm_head.weight.data.normal_(mean=0.0, std=factor * self.config.d_model ** -0.5)
         elif isinstance(module, FlashT5DenseGatedAct):
             d_ff, d_model = module.wi_0.weight.data.size()
             module.wi_0.weight.data.normal_(mean=0.0, std=factor * ((d_model) ** -0.5))
@@ -452,7 +514,9 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
-        self.loss_fct = CrossEntropyLoss(label_smoothing=config.label_smoothing)
+        self.loss_fct = FlashT5CrossEntropyLoss(z_loss_factor=config.z_loss,
+                                                label_smoothing=config.label_smoothing,
+                                                use_triton_crossentropy=config.use_triton_crossentropy)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -553,7 +617,7 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
 
         loss = None
         if labels is not None:
-            loss, z_loss = fast_cross_entropy_loss(lm_logits, labels, use_slow=(not self.config.use_triton_crossentropy))
+            loss, z_loss = self.loss_fct(lm_logits, labels)
             loss += z_loss
 
         return Seq2SeqLMOutput(

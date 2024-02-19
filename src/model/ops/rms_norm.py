@@ -78,7 +78,6 @@ def _rms_layernorm_forward(
     else:
         tl.store(Y + col_offsets, output, mask=mask)
 
-
 @triton.jit
 def _rms_layernorm_backward(
     dY, dY_row_stride,
@@ -132,6 +131,63 @@ def _rms_layernorm_backward(
         tl.store(dX + col_offsets, output, mask=mask)
 
 
+# Wrapper for triton kernel for torch.compile - should be unecessary for PyTorch 2.3 ?
+torch.library.define("flasht5::rmsnorm_triton_fwd", "(Tensor X, Tensor W, float eps, int n_cols, int n_rows, int BLOCK_SIZE, int num_warps) -> (Tensor, Tensor)")
+
+@torch.library.impl("flasht5::rmsnorm_triton_fwd", "default")
+def rmsnorm_triton_fwd(X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps):
+    Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device="cuda")
+    r = torch.empty(n_rows, dtype=torch.float32, device="cuda")
+
+    _rms_layernorm_forward[(n_rows,)](
+        Y, Y.stride(0),
+        X, X.stride(0),
+        W, W.stride(0),
+        r, r.stride(0),
+        n_cols, eps,
+        BLOCK_SIZE=BLOCK_SIZE,
+        IS_EVEN_X=((n_cols % BLOCK_SIZE) == 0),
+        num_warps=num_warps
+    )
+
+    return Y, r
+
+
+@torch.library.impl_abstract("flasht5::rmsnorm_triton_fwd", rmsnorm_triton_fwd)
+def rmsnorm_triton_fwd_abstract(X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps):
+    Y = X.new_empty((n_rows, n_cols))
+    r = X.new_empty((n_rows))
+    return Y, r
+
+torch.library.define("flasht5::rmsnorm_triton_bwd", "(Tensor dY, Tensor r, Tensor X, Tensor W, float eps, int n_cols, int n_rows, int BLOCK_SIZE, int num_warps) -> (Tensor, Tensor)")
+
+@torch.library.impl("flasht5::rmsnorm_triton_bwd", "default")
+def rmsnorm_triton_bwd(dY, r, X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps):
+
+    dX = torch.empty_like(dY)
+    dW = torch.empty_like(dY)
+
+    _rms_layernorm_backward[(n_rows,)](
+        dY, dY.stride(0),
+        X,  X.stride(0),
+        W,  1,
+        r,  1,
+        dW, dW.stride(0),
+        dX, dX.stride(0),
+        n_cols, eps,
+        BLOCK_SIZE=BLOCK_SIZE,
+        IS_EVEN_X=((n_cols % BLOCK_SIZE) == 0),
+        num_warps=num_warps,
+    )
+
+    return dX, dW
+
+
+@torch.library.impl_abstract("flasht5::rmsnorm_triton_bwd", rmsnorm_triton_bwd)
+def rmsnorm_triton_bwd_abstract(dY, r, X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps):
+    return torch.empty_like(dY), torch.empty_like(dY)
+
+
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, W, eps):
@@ -141,19 +197,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-        Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device="cuda")
-        r = torch.empty(n_rows, dtype=torch.float32, device="cuda")
-
-        _rms_layernorm_forward[(n_rows,)](
-            Y, Y.stride(0),
-            X, X.stride(0),
-            W, W.stride(0),
-            r, r.stride(0),
-            n_cols, eps,
-            BLOCK_SIZE=BLOCK_SIZE,
-            IS_EVEN_X=((n_cols % BLOCK_SIZE) == 0),
-            num_warps=num_warps
-        )
+        Y, r = torch.ops.flasht5.rmsnorm_triton_fwd(X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps)
 
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -171,18 +215,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dX = torch.empty_like(dY)
         dW = torch.empty_like(dY)
 
-        _rms_layernorm_backward[(n_rows,)](
-            dY, dY.stride(0),
-            X,  X .stride(0),
-            W,  W .stride(0),
-            r,  r .stride(0),
-            dW, dW.stride(0),
-            dX, dX.stride(0),
-            n_cols, ctx.eps,
-            BLOCK_SIZE=ctx.BLOCK_SIZE,
-            IS_EVEN_X=((n_cols % ctx.BLOCK_SIZE) == 0),
-            num_warps=ctx.num_warps,
-        )
+        dW, dX = torch.ops.flasht5.rmsnorm_triton_bwd(dY, r, X, W, ctx.eps, n_cols, n_rows, ctx.BLOCK_SIZE, ctx.num_warps)
+
         dX = dX.view(*shape)
         return dX, dW.sum(0), None
 

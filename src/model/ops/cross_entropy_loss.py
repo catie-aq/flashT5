@@ -80,8 +80,6 @@ def _cross_entropy_forward(logits_ptr, logits_row_stride,
         loss = 0.0
 
     tl.store(loss_ptr, loss)
-pass
-
 
 @triton.jit
 def _cross_entropy_backward(logits_ptr, logits_row_stride,
@@ -156,26 +154,78 @@ def _cross_entropy_backward(logits_ptr, logits_row_stride,
         tl.store(dinputs_ptr + col_offsets, din)
     else:
         tl.store(dinputs_ptr + col_offsets, din, mask=mask)
-pass
 
+
+# Wrapper for triton kernel for torch.compile - should be unecessary for PyTorch 2.3 ?
+torch.library.define("flasht5::cross_entropy_triton_fwd", "(Tensor logits, Tensor labels, int n_cols, int n_rows, int BLOCK_SIZE, int num_warps) -> (Tensor, Tensor)")
+
+@torch.library.impl("flasht5::cross_entropy_triton_fwd", "default")
+def cross_entropy_triton_fwd(logits, labels, n_cols, n_rows, BLOCK_SIZE, num_warps):
+    losses    = torch.empty(n_rows, dtype=torch.float32, device=logits.device)
+    logsumexp = torch.empty(n_rows, dtype=torch.float32, device=logits.device)
+
+    _cross_entropy_forward[(n_rows,)](
+        logits, logits.stride(0),
+        losses,
+        logsumexp,
+        labels,
+        n_cols,
+        BLOCK_SIZE = BLOCK_SIZE,
+        IS_EVEN=((n_cols % BLOCK_SIZE) == 0),
+        num_warps  = num_warps,
+    )
+
+    return losses, logsumexp
+
+
+@torch.library.impl_abstract("flasht5::cross_entropy_triton_fwd", cross_entropy_triton_fwd)
+def cross_entropy_triton_fwd_abstract(logits, labels, n_cols, n_rows, BLOCK_SIZE, num_warps):
+    losses    = torch.empty(n_rows, dtype=torch.float32, device=logits.device)
+    logsumexp = torch.empty(n_rows, dtype=torch.float32, device=logits.device)
+
+    return losses, logsumexp
+
+torch.library.define("flasht5::cross_entropy_triton_bwd", "(Tensor dlosses, Tensor dlogsumexp, Tensor logits, Tensor logsumexp, Tensor labels, float z_loss_factor, int n_cols, int n_rows, int BLOCK_SIZE, int num_warps) -> Tensor")
+
+@torch.library.impl("flasht5::cross_entropy_triton_bwd", "default")
+def cross_entropy_triton_bwd(dlosses, dlogsumexp, logits, logsumexp, labels, z_loss_factor, n_cols, n_rows, BLOCK_SIZE, num_warps):
+
+    dinputs = torch.empty_like(logits)
+
+    _cross_entropy_backward[(n_rows,)](
+        logits,   logits.stride(0),
+        dinputs, dinputs.stride(0),
+        dlosses, dlosses.stride(0),
+        dlogsumexp, dlogsumexp.stride(0),
+        logsumexp,
+        labels,
+        n_cols,
+        BLOCK_SIZE = BLOCK_SIZE,
+        USE_Z_LOSS = (z_loss_factor != 0.0),
+        IS_EVEN=((n_cols % BLOCK_SIZE) == 0),
+        num_warps  = num_warps,
+    )
+
+    return dinputs
+
+
+@torch.library.impl_abstract("flasht5::cross_entropy_triton_bwd", cross_entropy_triton_bwd)
+def cross_entropy_triton_bwd_abstract(dlosses, dlogsumexp, logits, logsumexp, labels, z_loss_factor, n_cols, n_rows, BLOCK_SIZE, num_warps):
+    return torch.empty_like(logits)
 
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
     def forward(ctx, logits, labels, z_loss_factor):
         n_rows, n_cols = logits.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-        losses    = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
-        logsumexp = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
 
-        _cross_entropy_forward[(n_rows,)](
-            logits, logits.stride(0),
-            losses,
-            logsumexp,
+        losses, logsumexp = torch.ops.flasht5.cross_entropy_triton_fwd(
+            logits,
             labels,
             n_cols,
+            n_rows,
             BLOCK_SIZE = BLOCK_SIZE,
-            IS_EVEN=((n_cols % BLOCK_SIZE) == 0),
-            num_warps  = num_warps,
+            num_warps  = num_warps
         )
 
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -183,42 +233,27 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         ctx.z_loss_factor = z_loss_factor
         ctx.save_for_backward(logits, logsumexp, labels)
         return losses, logsumexp
-    pass
 
     @staticmethod
     def backward(ctx, dlosses, dlogsumexp):
         logits, logsumexp, labels = ctx.saved_tensors
         n_rows, n_cols = logits.shape
 
-        dinputs = torch.empty_like(logits)
-
-        _cross_entropy_backward[(n_rows,)](
-            logits,   logits.stride(0),
-            dinputs, dinputs.stride(0),
-            dlosses, dlosses.stride(0),
-            dlogsumexp, dlogsumexp.stride(0),
+        dinputs = torch.ops.flasht5.cross_entropy_triton_bwd(
+            dlosses,
+            dlogsumexp,
+            logits,
             logsumexp,
             labels,
+            ctx.z_loss_factor,
             n_cols,
-            BLOCK_SIZE = ctx.BLOCK_SIZE,
-            USE_Z_LOSS = (ctx.z_loss_factor != 0.0),
-            IS_EVEN=((n_cols % ctx.BLOCK_SIZE) == 0),
-            num_warps  = ctx.num_warps,
+            n_rows,
+            ctx.BLOCK_SIZE,
+            ctx.num_warps
         )
-        return dinputs, None, None,
-    pass
-pass
+        return dinputs, None, None
 
-def compute_zloss(logits: torch.Tensor, z_loss: float):
-
-  logits_sum = torch.logsumexp(logits, dim=-1, keepdim=True)
-  log_z = torch.squeeze(logits_sum, axis=-1)
-  total_z_loss = z_loss * torch.square(log_z)
-  return total_z_loss.mean()
-pass
-
-slow_cross_entropy_loss = torch.nn.functional.cross_entropy
-def fast_cross_entropy_loss(logits, labels, z_loss_factor=0.0, use_slow=False):
+def fast_cross_entropy_loss(logits, labels, z_loss_factor=0.0):
     """
     Arguments:
         logits: (batch, seq_len, vocab_size)
@@ -228,26 +263,14 @@ def fast_cross_entropy_loss(logits, labels, z_loss_factor=0.0, use_slow=False):
     """
     batch, seq_len, d = logits.shape
     assert(labels.shape == (batch, seq_len))
+    assert (d <= MAX_FUSED_SIZE)
 
-    # Prelim support Qwen, Deepseek other large vocab sizes > 2^16
-    if (d > MAX_FUSED_SIZE) or use_slow:
-        logits_flatten = logits.float().view(batch*seq_len, d) # Must cast to float32 for numerical stability
-        labels_flatten = labels.view(-1)
-        loss = slow_cross_entropy_loss(logits_flatten, labels_flatten)
-        z_loss = 0.0
-        if z_loss_factor != 0.0:
-            z_loss = compute_zloss(logits_flatten[labels_flatten != -100],
-                                   z_loss=z_loss_factor)
-        return loss, z_loss
-    else:
-        loss, lse = Fast_CrossEntropyLoss.apply(
-            logits.view(batch*seq_len, d),
-            labels.view(-1),
-            z_loss_factor
-        )
+    loss, lse = Fast_CrossEntropyLoss.apply(
+        logits.view(batch*seq_len, d),
+        labels.view(-1),
+        z_loss_factor
+    )
 
-        n_items = torch.count_nonzero(labels != -100)
+    n_items = torch.count_nonzero(labels != -100)
 
-        return loss.sum() / n_items, (z_loss_factor * torch.square(lse).sum()) / n_items
-    pass
-pass
+    return loss.sum() / n_items, (z_loss_factor * torch.square(lse).sum()) / n_items
