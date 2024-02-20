@@ -1,5 +1,5 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-# Copyright 2024-present Boris Albar & CATIE. All rights reserved.
+# Copyright 2024 CATIE. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 #
 # Modification to the original version from Unsloth:
 # - return the z-loss
+# - support for torch.compile
 
 import triton
 import triton.language as tl

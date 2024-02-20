@@ -1,5 +1,6 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-# Copyright 2024-present CATIE. All rights reserved.
+# Copyright 2024 CATIE. All rights reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -13,8 +14,9 @@
 # limitations under the License.
 #
 # Modifications to the orignal file
-# * add weights gradients
-# * remove the mask if size is a power of 2
+# - add weights gradients
+# - remove the mask if size is a power of 2
+# - support for torch.compile
 
 import triton
 import triton.language as tl
