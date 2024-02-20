@@ -207,6 +207,7 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         self.position_encoding_type = config.position_encoding_type
         self.max_sequence_length = config.max_sequence_length
         self.softmax_scale = 1.0/math.sqrt(self.n_heads)
+        self.use_full_bias_size = config.use_full_bias_size
 
         if self.use_flash_attention == "triton" and flash_attention_triton is None:
             raise ImportError("flash_attention_triton is not available")
@@ -252,6 +253,9 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
 
         if position_bias is None and self.pe_encoding is not None:
             q, kv, _, position_bias = self.pe_encoding(q, kv, None)
+
+        if self.use_full_bias_size:
+            position_bias = position_bias.expand(q.shape[0], q.shape[2], q.shape[1], kv.shape[1])
 
         if self.use_flash_attention == "fa2":
             output = flash_attn_kvpacked_func(q, kv, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)

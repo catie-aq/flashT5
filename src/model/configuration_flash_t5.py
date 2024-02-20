@@ -30,6 +30,7 @@ class FlashT5Config(T5Config):
         use_triton_crossentropy=False,
         use_triton_gated_mlp=False,
         use_gelu_act=True,
+        use_full_bias_size=False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -49,6 +50,7 @@ class FlashT5Config(T5Config):
         self.use_triton_crossentropy = use_triton_crossentropy
         self.use_triton_gated_mlp = use_triton_gated_mlp
         self.use_gelu_act = use_gelu_act
+        self.use_full_bias_size = use_full_bias_size
 
         self.auto_map = AUTO_MAP
 
