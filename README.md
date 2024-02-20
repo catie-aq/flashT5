@@ -1,6 +1,6 @@
 # FAT5 - A fast implementation of T5/UL2 with Flash Attention
 
-**⚠ WARNING: This repository is not yet complete. Please refer to the roadmap part of this README. ⚠**
+**⚠ WARNING: This repository is not yet complete and may still contains various bugs. Please refer to the roadmap part of this README for known issues. ⚠**
 
 FAT5 (for **F**l**a**sh**T5**) is an implementation of T5 in PyTorch with an UL2 objective optimized for GPGPU for both training and inference.
 It uses an experimental feature for using [Flash Attention (v2)](https://arxiv.org/abs/2307.08691) with relative position encoding biases
