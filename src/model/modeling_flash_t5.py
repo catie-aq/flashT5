@@ -213,6 +213,8 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         elif self.use_flash_attention == "fa2" and flash_attn_kvpacked_func is None:
             raise ImportError("Flash Attention 2 is not available")
 
+        assert (self.p_dropout == 0.0) or (self.use_flash_attention != "triton"), "Triton attention does not support dropout"
+
         if self.position_encoding_type == "ALiBi" and has_relative_attention_bias:
             # build alibi matrix with an upper bound on seq length
             self.pe_encoding = ALiBiPositionalEncoding(self.max_sequence_length, self.n_heads, config.alibi_mode, config.use_randomized_position_encoding)
@@ -254,7 +256,6 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         if self.use_flash_attention == "fa2":
             output = flash_attn_kvpacked_func(q, kv, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
         elif self.use_flash_attention == "triton":
-            assert self.p_dropout == 0.0, "Triton attention does not support dropout"
             q = q.permute(0, 2, 1, 3)
             kv = kv.permute(2, 0, 3, 1, 4)
             k,v = kv.unbind(0)

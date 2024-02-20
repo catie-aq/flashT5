@@ -28,7 +28,7 @@ While the original implementation does not support attention biases, we added th
   <img width=800px alt="FAT5 animation" src="./assets/FAT5.gif">
 </picture>
 
-Other parts of the architecture where optimized using [ad-hoc Triton kernels](src/model/ops/) for the cross-entropy (and z-loss) and layernorm. We also provide a [Triton implementation of Flash Attention 2](src/model/ops/flash_attention_v2_bias.py) supporting attention biases for those who do not like to recompile a custom patch for the flash attention. Beware that this implementation is not yet complete and only work when sequences in the encoder and decoder are of the same size (see the [Roadmap](#roadmap)).
+Other parts of the architecture where optimized using [ad-hoc Triton kernels](src/model/ops/) for the cross-entropy (and z-loss) and layernorm. We also provide a [Triton implementation of Flash Attention 2](src/model/ops/flash_attention_v2_bias.py) supporting attention biases for those who do not like to recompile a custom patch for the flash attention. Beware that this implementation do not support training in bfloat16 due to the current lack of support for atomicAdd for this data type.
 
 For pretext tasks during pre-training, we use the [UL2](https://arxiv.org/abs/2205.05131v3) mixture of denoisers by Tay et Dehghani (2022) with the following 7 tasks:
 
@@ -95,10 +95,9 @@ Here is several following up work that we would like to make :
 
 - Fixing the compilation with PyTorch 2.2 : the current implentation doesn't support compiling with d_model = num_heads * head_dim.
 
-- Proper Triton Flash Attention 2 implementation : the current implentation doesn't support keys and queries of different length,
-we may use a more complete implementation of FA2 in Triton such as [this one](https://github.com/FlagOpen/FlagAttention).
+- Support flash decoding for inference
 
-- We also are revisiting the encoder-decoder architecture using subquadratic operators to replace the attention. Stay tuned for more information about this.
+- We are also trying to revisit the encoder-decoder architecture using subquadratic operators to replace the attention. Stay tuned for more information about this.
 
 ## License
 [Apache-2.0 license](https://github.com/catie-aq/flashT5/tree/main?tab=Apache-2.0-1-ov-file#readme)
@@ -109,9 +108,9 @@ We use the following repos and thanks the authors for this :
 - [nanoT5](https://github.com/PiotrNawrot/nanoT5) for the simple implementation and the optimizer.
 - [Flash attention](https://github.com/Dao-AILab/flash-attention) for the groundbreaking algorithm for computing attention.
 - [Hugging Face](https://github.com/huggingface/transformers) for their excellent library.
-- [Unsloth](https://github.com/unslothai/unsloth) for the Triton kernels of the cross-entropy and layernorm that we adapted to our usage.
+- [FlagAttention](https://github.com/FlagOpen/FlagAttention) for the implementation of FA2 in Triton
+- [Unsloth](https://github.com/unslothai/unsloth) for the simple Triton kernels of the cross-entropy and layernorm that we adapted to our usage.
 
 
 This work was support by the [Vaniila platform](http://vaniila.ai/).<br>
 [<img width="200" src="https://www.vaniila.ai/wp-content/uploads/2020/02/Vaniila_bleu_horizontal.png">](http://vaniila.ai/)
-
