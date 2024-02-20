@@ -1,3 +1,22 @@
+# Copyright 2023 BAAI
+# Copyright 2024 CATIE
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Modifications to the orignal file
+# - Support for biases following https://github.com/FlagOpen/FlagAttention/pull/5
+# - Support for shape (1,1,q,k) biases
+
 import math
 import torch
 import triton
@@ -15,8 +34,8 @@ def flash_attn_v2_fwd(q, k, v, bias, causal, sm_scale, BLOCK_M, BLOCK_N, num_war
     larger_m = M > N
 
     # Trick to support shape such as (1, 1, seqlen_q, seqlen_k)
-    bias_batch_stride = bias.stride(0)
-    bias_heads_stride = bias.stride(1)
+    bias_batch_stride = bias.stride(0) if bias is not None else 0
+    bias_heads_stride = bias.stride(1) if bias is not None else 0
     if bias is not None:
         if (bias.shape[0] != q.shape[0]) and (bias.shape[0] == 1):
             bias_batch_stride = 0
@@ -37,11 +56,14 @@ def flash_attn_v2_fwd(q, k, v, bias, causal, sm_scale, BLOCK_M, BLOCK_N, num_war
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),
         o.stride(0), o.stride(1), o.stride(2), o.stride(3),
-        bias_batch_stride, bias_heads_stride, bias.stride(2), bias.stride(3),
+        bias_batch_stride, bias_heads_stride,
+        bias.stride(2) if bias is not None else 0,
+        bias.stride(3) if bias is not None else 0,
         B, H, M, N, P_SEQ,
         BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_DMODEL=D,
         IS_CAUSAL=causal, LARGER_M=larger_m,
         DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
+        HAS_BIAS=(bias is not None),
         num_warps=num_warps, num_stages=num_stages,
     )
 
@@ -70,8 +92,8 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
     divisible_n = N % BLOCK_N == 0
 
     # Trick to support shape such as (1, 1, seqlen_q, seqlen_k)
-    bias_batch_stride = bias.stride(0)
-    bias_heads_stride = bias.stride(1)
+    bias_batch_stride = bias.stride(0) if bias is not None else 0
+    bias_heads_stride = bias.stride(1) if bias is not None else 0
     if bias is not None:
         if (bias.shape[0] != q.shape[0]) and (bias.shape[0] == 1):
             bias_batch_stride = 0
@@ -95,9 +117,10 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
 
+    RETURN_DS = bias is not None and bias.requires_grad
     USE_DS_ATOMIC_ADD = (bias_batch_stride == 0) or (bias_heads_stride == 0)
     ds = None
-    if bias.requires_grad:
+    if RETURN_DS:
         ds = ds = torch.empty_like(bias)
         if USE_DS_ATOMIC_ADD:
             ds = ds.zero_()
@@ -110,14 +133,17 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-        bias_batch_stride, bias_heads_stride, bias.stride(2), bias.stride(3),
+        bias_batch_stride, bias_heads_stride,
+        bias.stride(2) if bias is not None else 0,
+        bias.stride(3) if bias is not None else 0,
         do.stride(0), do.stride(1), do.stride(2), do.stride(3),
         dk.stride(0), dk.stride(1), dk.stride(2), dk.stride(3),
         dv.stride(0), dv.stride(1), dv.stride(2), dv.stride(3),
         B, H, M, N, P_SEQ,
         BLOCK_M=BLOCK_M, BLOCK_DMODEL=D, BLOCK_N=BLOCK_N, CAUSAL=causal,
         DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
-        RETURN_DS=bias.requires_grad, USE_DS_ATOMIC_ADD=USE_DS_ATOMIC_ADD,
+        HAS_BIAS=(bias is not None),
+        RETURN_DS=RETURN_DS, USE_DS_ATOMIC_ADD=USE_DS_ATOMIC_ADD,
         num_stages=num_stages, num_warps=num_warps,
     )
 
@@ -130,13 +156,16 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-        bias_batch_stride, bias_heads_stride, bias.stride(2), bias.stride(3),
+        bias_batch_stride, bias_heads_stride,
+        bias.stride(2) if bias is not None else 0,
+        bias.stride(3) if bias is not None else 0,
         do.stride(0), do.stride(1), do.stride(2), do.stride(3),
         dq.stride(0), dq.stride(1), dq.stride(2), dq.stride(3),
         B, H, M, N, P_SEQ,
         BLOCK_M=BLOCK_M, BLOCK_DMODEL=D, BLOCK_N=BLOCK_N,
         CAUSAL=causal, LARGER_M=larger_m,
         DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
+        HAS_BIAS=(bias is not None),
         num_stages=num_stages, num_warps = num_warps,
     )
 
@@ -147,7 +176,7 @@ def cross_entropy_triton_bwd_abstract(o, do, q, k, v, bias, L, causal, sm_scale,
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
-    ds = torch.empty_like(bias)
+    ds = torch.empty_like(bias) if bias is not None else None
 
     return dq, dk, dv, ds
 
@@ -263,6 +292,7 @@ def _fwd_kernel(
     BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr, BLOCK_N: tl.constexpr,
     IS_CAUSAL: tl.constexpr, LARGER_M: tl.constexpr,
     DIVISIBLE_M: tl.constexpr, DIVISIBLE_N: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
 ):
     input_dtype = Q.dtype.element_ty
     # -- grid id --
@@ -280,7 +310,8 @@ def _fwd_kernel(
     K += off_z * stride_kz + off_h * stride_kh
     V += off_z * stride_vz + off_h * stride_vh
     O += off_z * stride_oz + off_h * stride_oh
-    B += off_z * stride_bz + off_h * stride_bh
+    if HAS_BIAS:
+        B += off_z * stride_bz + off_h * stride_bh
     L += (off_z * H + off_h) * M # l's shape is (B, H, M)
 
     offs_m_base = tl.arange(0, BLOCK_M)
@@ -337,7 +368,8 @@ def _fwd_kernel(
     offs_n_init = offs_n_base
     k_ptrs = K + (offs_k[:, None] * stride_vk + offs_n_init[None, :] * stride_vn) # (BLOCK_DMODEL, BLOCK_N)
     v_ptrs = V + (offs_n_init[:, None] * stride_kn + offs_k[None, :] * stride_kk) # (BLOCK_N, BLOCK_DMODEL)
-    bias_ptrs = B + (offs_m[:, None] * stride_bm + offs_n_init[None, :] * stride_bn) # (BLOCK_M, BLOCK_N)
+    if HAS_BIAS:
+        bias_ptrs = B + (offs_m[:, None] * stride_bm + offs_n_init[None, :] * stride_bn) # (BLOCK_M, BLOCK_N)
 
     for start_n in range(0, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
@@ -353,15 +385,17 @@ def _fwd_kernel(
             v = tl.load(v_ptrs, mask=mask_n[:, None], cache_modifier=".cg")
 
         # -- load bias --
-        if DIVISIBLE_M and DIVISIBLE_N:
-            b = tl.load(bias_ptrs)
-        else:
-            b = tl.load(bias_ptrs, mask_m[:, None] & mask_n[None, :])
+        if HAS_BIAS:
+            if DIVISIBLE_M and DIVISIBLE_N:
+                b = tl.load(bias_ptrs)
+            else:
+                b = tl.load(bias_ptrs, mask_m[:, None] & mask_n[None, :])
 
         # -- compute qk ---
         s = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         s += tl.dot(q, k) * sm_scale
-        s += b
+        if HAS_BIAS:
+            s += b
 
         if not DIVISIBLE_N:
             s = tl.where(mask_n[None, :], s, float("-inf"))
@@ -384,7 +418,8 @@ def _fwd_kernel(
         # update pointers
         k_ptrs += BLOCK_N * stride_kn
         v_ptrs += BLOCK_N * stride_vn
-        bias_ptrs += BLOCK_N * stride_bn
+        if HAS_BIAS:
+            bias_ptrs += BLOCK_N * stride_bn
 
     # write back l & o
     if IS_CAUSAL and LARGER_M:
@@ -493,6 +528,7 @@ def _bwd_kv_kernel(
     BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr, BLOCK_N: tl.constexpr,
     CAUSAL: tl.constexpr,
     DIVISIBLE_M: tl.constexpr, DIVISIBLE_N: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
     RETURN_DS: tl.constexpr, USE_DS_ATOMIC_ADD: tl.constexpr,
 ):
     input_dtype = Q.dtype.element_ty
@@ -507,13 +543,15 @@ def _bwd_kv_kernel(
     Q += off_z * stride_qz + off_h * stride_qh
     K += off_z * stride_kz + off_h * stride_kh
     V += off_z * stride_vz + off_h * stride_vh
-    B += off_z * stride_bz + off_h * stride_bh
+    if HAS_BIAS:
+        B += off_z * stride_bz + off_h * stride_bh
     DO += off_z * stride_doz + off_h * stride_doh
 
     # offset pointers for batch/head
     DK += off_z * stride_dkz + off_h * stride_dkh
     DV += off_z * stride_dvz + off_h * stride_dvh
-    DS += off_z * stride_bz + off_h * stride_bh
+    if HAS_BIAS:
+        DS += off_z * stride_bz + off_h * stride_bh
 
     # offset pointers for batch/head
     D += (off_z * H + off_h) * M
@@ -539,8 +577,9 @@ def _bwd_kv_kernel(
     dv_ptrs = DV + (offs_n[:, None] * stride_dvn + offs_k[None, :] * stride_dvk) # (BLOCK_N, BLOCK_DMODEL)
     dk_ptrs = DK + (offs_n[:, None] * stride_dkn + offs_k[None, :] * stride_dkk) # (BLOCK_N, BLOCK_DMODEL)
 
-    bias_ptrs = B + (offs_m_init[:, None] * stride_bm + offs_n[None, :] * stride_bn)
-    ds_ptrs = DS + (offs_m_init[:, None] * stride_bm + offs_n[None, :] * stride_bn)
+    if HAS_BIAS:
+        bias_ptrs = B + (offs_m_init[:, None] * stride_bm + offs_n[None, :] * stride_bn)
+        ds_ptrs = DS + (offs_m_init[:, None] * stride_bm + offs_n[None, :] * stride_bn)
 
     # k and v stay in SRAM throughout
     mask_n = offs_n < N
@@ -570,15 +609,18 @@ def _bwd_kv_kernel(
             q = tl.load(q_ptrs, mask=mask_m[:, None])
 
         # load bias
-        if DIVISIBLE_M and DIVISIBLE_N:
-            b = tl.load(bias_ptrs)
-        else:
-            b = tl.load(bias_ptrs, mask=mask_m[:, None] & mask_n[None, :])
+        if HAS_BIAS:
+            if DIVISIBLE_M and DIVISIBLE_N:
+                b = tl.load(bias_ptrs)
+            else:
+                b = tl.load(bias_ptrs, mask=mask_m[:, None] & mask_n[None, :])
 
         # recompute p = softmax(qk * sm_scale, dim=-1)
         s = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         s += tl.dot(q, tl.trans(k)) * sm_scale
-        s += b
+
+        if HAS_BIAS:
+            s += b
 
         # NOTE: since softmax in backward is pointwise, the normalizer has been saved in fwd)
         # So masking on s is not needed.
@@ -640,8 +682,9 @@ def _bwd_kv_kernel(
         # increment pointers
         q_ptrs += BLOCK_M * stride_qm
         do_ptrs += BLOCK_M * stride_dom
-        bias_ptrs += BLOCK_M * stride_bm
-        ds_ptrs += BLOCK_M * stride_bm
+        if HAS_BIAS:
+            bias_ptrs += BLOCK_M * stride_bm
+            ds_ptrs += BLOCK_M * stride_bm
 
     dk *= sm_scale
     if DIVISIBLE_N:
@@ -668,6 +711,7 @@ def _bwd_q_kernel(
     BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr, BLOCK_N: tl.constexpr,
     CAUSAL: tl.constexpr, LARGER_M: tl.constexpr,
     DIVISIBLE_M: tl.constexpr, DIVISIBLE_N: tl.constexpr,
+    HAS_BIAS: tl.constexpr
 ):
     input_dtype = Q.dtype.element_ty
     # -- grid id --
@@ -684,7 +728,8 @@ def _bwd_q_kernel(
     Q += off_z * stride_qz + off_h * stride_qh
     K += off_z * stride_kz + off_h * stride_kh
     V += off_z * stride_vz + off_h * stride_vh
-    B += off_z * stride_bz + off_h * stride_bh
+    if HAS_BIAS:
+        B += off_z * stride_bz + off_h * stride_bh
     DO += off_z * stride_doz + off_h * stride_doh
     D += (off_z * H + off_h) * M
     L += (off_z * H + off_h) * M
@@ -702,7 +747,8 @@ def _bwd_q_kernel(
     k_ptrs = K + (offs_n_init[:, None] * stride_kn + offs_k[None, :] * stride_kk) # (BLOCK_N, BLOCK_DMODEL)
     v_ptrs = V + (offs_n_init[:, None] * stride_vn + offs_k[None, :] * stride_vk) # (BLOCK_N, BLOCK_DMODEL)
 
-    bias_ptrs = B + (offs_m[:, None] * stride_bm + offs_n_init[None, :] * stride_bn)
+    if HAS_BIAS:
+        bias_ptrs = B + (offs_m[:, None] * stride_bm + offs_n_init[None, :] * stride_bn)
 
     dq_ptrs = DQ + (offs_m[:, None] * stride_dqm + offs_k[None, :] * stride_dqk) # (BLOCK_M, BLOCK_DMODEL)
     do_ptrs = DO + (offs_m[:, None] * stride_dom + offs_k[None, :] * stride_dok) # (BLOCK_M, BLOCK_DMODEL)
@@ -750,10 +796,11 @@ def _bwd_q_kernel(
             k = tl.load(k_ptrs, mask=mask_n[:, None])
 
         # load bias
-        if DIVISIBLE_M and DIVISIBLE_N:
-            b = tl.load(bias_ptrs)
-        else:
-            b = tl.load(bias_ptrs, mask=mask_m[:, None] & mask_n[None, :])
+        if HAS_BIAS:
+            if DIVISIBLE_M and DIVISIBLE_N:
+                b = tl.load(bias_ptrs)
+            else:
+                b = tl.load(bias_ptrs, mask=mask_m[:, None] & mask_n[None, :])
 
         # recompute p = softmax(qk * sm_scale, dim=-1)
         if not DIVISIBLE_N:
@@ -763,7 +810,8 @@ def _bwd_q_kernel(
 
         s = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         s += tl.dot(q, tl.trans(k)) * sm_scale
-        s += b
+        if HAS_BIAS:
+            s += b
 
         # NOTE: since softmax in backward is pointwise, the normalizer has been saved in fwd)
         # So masking on s is not needed.
@@ -797,7 +845,8 @@ def _bwd_q_kernel(
         # increment pointers
         k_ptrs += BLOCK_N * stride_kn
         v_ptrs += BLOCK_N * stride_vn
-        bias_ptrs += BLOCK_N * stride_bn
+        if HAS_BIAS:
+            bias_ptrs += BLOCK_N * stride_bn
 
     dq *= sm_scale
     if DIVISIBLE_M:
