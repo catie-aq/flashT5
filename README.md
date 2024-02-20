@@ -51,19 +51,17 @@ As there was no implementation available in PyTorch, we [added one](src/data/dat
 
 The benchmarks were made on a A100 80G by comparing to the [original implementation of T5 v1.1](https://huggingface.co/docs/transformers/model_doc/t5v1.1) available on Hugging Face. The sequence length is the same for both the encoder and the decoder. Different sequence lengths for both parts are possible and even recommanded depending on the application.
 
-We see that below a sequence length of 256, torch.compile does a pretty good job in optimizing the model while the Flash Attention
+We see that below that for a sequence length below 256, torch.compile does a pretty good job in optimizing the model while the Flash Attention
 start to pick up speed at 512 length and above. Note that the orignal model cannot accomodate larger than 512 sequence length despite using a 80G GPU !
-
-**⚠ WARNING: To get the best of both worlds, we implemented an interface to use both Flash Attention 2 and torch.compile. You can find a torch compilable interface to Flash Attention 2 [here](src/utils/fa2_lib/). During the process, we encountered a bug with PyTorch 2.2 when d_model = num_heads * head_dim which is the case for the default configuration of T5. In this case, the gradients are incorrectly computed witch lead to exploding gradients during training. The forward pass is not affected for inference, but if you ever need to train the model, either disable torch.compile or change the d_model to avoid equality. We are currently investigating where this bug comes from (see the [Roadmap](#roadmap)). ⚠**
-
 
 <p float="left">
   <img src="assets/benchmarks/fwd-bfloat16-b16.png" width="49%" />
   <img src="assets/benchmarks/bwd-bfloat16-b16.png" width="49%" />
 </p>
 
+**⚠ WARNING: To get the best of both worlds, we implemented an interface to use both Flash Attention 2 and torch.compile. You can find a torch compilable interface to Flash Attention 2 [here](src/utils/fa2_lib/). During the process, we encountered a bug with PyTorch 2.2 when d_model = num_heads * head_dim which is the case for the default configuration of T5. In this case, the gradients are incorrectly computed witch lead to exploding gradients during training. The forward pass is not affected for inference, but if you ever need to train the model, either disable torch.compile or change the d_model to avoid equality. We are currently investigating where this bug comes from (see the [Roadmap](#roadmap)). ⚠**
 
-We can see a clear improvement in memory usage in our implementation for larger batch sizes :
+We can see a clear improvement in memory usage in our implementation for larger batch sizes (no value means OOM) :
 
 <p float="left">
   <img src="assets/benchmarks/mem-bfloat16-b8.png" width="49%" />
