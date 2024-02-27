@@ -15,7 +15,6 @@ model_args:
   d_model: 768
   decoder_start_token_id: 0
   label_smoothing: 0.1
-  layer_norm_type: standard
   max_sequence_length: 1024
   model_type: flash_t5
   num_heads: 12
@@ -24,11 +23,11 @@ model_args:
   relative_attention_max_distance: 128
   relative_attention_num_buckets: 32
   tie_word_embeddings: false
-  use_flash_attention: "fa2"
+  use_flash_attention: "triton"
   use_glu_mlp: true
   use_randomized_position_encoding: false
   z_loss: 0.0001
-  use_triton_layernorm: true
+  use_triton_layernorm: false
   use_triton_crossentropy: true
   use_triton_gated_mlp: false
   use_gelu_act: true
@@ -51,7 +50,7 @@ training_args:
   gradient_checkpointing: false
   group_by_length: false
   include_tokens_per_second: true
-  learning_rate: 0.02
+  learning_rate: 5.0e-3
   logging_steps: 10
   logging_strategy: steps
   lr_scheduler_type: linear
@@ -69,7 +68,7 @@ training_args:
   save_steps: 5000
   save_strategy: steps
   seed: 42
-  torch_compile: false
+  torch_compile: true
   warmup_ratio: 0.0
   warmup_steps: 10000
   weight_decay: 0.0

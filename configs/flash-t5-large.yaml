@@ -15,7 +15,6 @@ model_args:
   d_model: 1024
   decoder_start_token_id: 0
   label_smoothing: 0.1
-  layer_norm_type: standard
   max_sequence_length: 1024
   model_type: flash_t5
   num_heads: 16
