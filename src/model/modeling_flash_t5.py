@@ -272,7 +272,7 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
             output = attn_ref(q, k, v, position_bias, dropout_p=self.p_dropout, sm_scale=self.softmax_scale, causal=self.is_causal)
             output = output.permute(0, 2, 1, 3)
 
-        output = self.o(output.view(output.shape[0], output.shape[1], self.inner_dim))
+        output = self.o(output.reshape(output.shape[0], output.shape[1], self.inner_dim))
         return (output, position_bias)
 
 
