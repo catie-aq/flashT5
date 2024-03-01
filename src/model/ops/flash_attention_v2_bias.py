@@ -117,11 +117,12 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
 
-    RETURN_DS = bias is not None and bias.requires_grad
+    HAS_BIAS = bias is not None
+    RETURN_DS = HAS_BIAS
     USE_DS_ATOMIC_ADD = (bias_batch_stride == 0) or (bias_heads_stride == 0)
     ds = None
     if RETURN_DS:
-        ds = ds = torch.empty_like(bias)
+        ds = torch.empty_like(bias)
         if USE_DS_ATOMIC_ADD:
             ds = ds.zero_()
 
@@ -134,15 +135,15 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),
         bias_batch_stride, bias_heads_stride,
-        bias.stride(2) if bias is not None else 0,
-        bias.stride(3) if bias is not None else 0,
+        bias.stride(2) if HAS_BIAS else 0,
+        bias.stride(3) if HAS_BIAS else 0,
         do.stride(0), do.stride(1), do.stride(2), do.stride(3),
         dk.stride(0), dk.stride(1), dk.stride(2), dk.stride(3),
         dv.stride(0), dv.stride(1), dv.stride(2), dv.stride(3),
         B, H, M, N, P_SEQ,
         BLOCK_M=BLOCK_M, BLOCK_DMODEL=D, BLOCK_N=BLOCK_N, CAUSAL=causal,
         DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
-        HAS_BIAS=(bias is not None),
+        HAS_BIAS=HAS_BIAS,
         RETURN_DS=RETURN_DS, USE_DS_ATOMIC_ADD=USE_DS_ATOMIC_ADD,
         num_stages=num_stages, num_warps=num_warps,
     )
@@ -157,15 +158,15 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
         v.stride(0), v.stride(1), v.stride(2), v.stride(3),
         bias_batch_stride, bias_heads_stride,
-        bias.stride(2) if bias is not None else 0,
-        bias.stride(3) if bias is not None else 0,
+        bias.stride(2) if HAS_BIAS else 0,
+        bias.stride(3) if HAS_BIAS else 0,
         do.stride(0), do.stride(1), do.stride(2), do.stride(3),
         dq.stride(0), dq.stride(1), dq.stride(2), dq.stride(3),
         B, H, M, N, P_SEQ,
         BLOCK_M=BLOCK_M, BLOCK_DMODEL=D, BLOCK_N=BLOCK_N,
         CAUSAL=causal, LARGER_M=larger_m,
         DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
-        HAS_BIAS=(bias is not None),
+        HAS_BIAS=HAS_BIAS,
         num_stages=num_stages, num_warps = num_warps,
     )
 
@@ -550,7 +551,7 @@ def _bwd_kv_kernel(
     # offset pointers for batch/head
     DK += off_z * stride_dkz + off_h * stride_dkh
     DV += off_z * stride_dvz + off_h * stride_dvh
-    if HAS_BIAS:
+    if RETURN_DS:
         DS += off_z * stride_bz + off_h * stride_bh
 
     # offset pointers for batch/head
@@ -579,6 +580,8 @@ def _bwd_kv_kernel(
 
     if HAS_BIAS:
         bias_ptrs = B + (offs_m_init[:, None] * stride_bm + offs_n[None, :] * stride_bn)
+
+    if RETURN_DS:
         ds_ptrs = DS + (offs_m_init[:, None] * stride_bm + offs_n[None, :] * stride_bn)
 
     # k and v stay in SRAM throughout
@@ -684,6 +687,7 @@ def _bwd_kv_kernel(
         do_ptrs += BLOCK_M * stride_dom
         if HAS_BIAS:
             bias_ptrs += BLOCK_M * stride_bm
+        if RETURN_DS:
             ds_ptrs += BLOCK_M * stride_bm
 
     dk *= sm_scale
