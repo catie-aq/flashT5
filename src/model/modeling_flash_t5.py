@@ -259,8 +259,8 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         if position_bias is None and self.pe_encoding is not None:
             q, k, v, position_bias = self.pe_encoding(q, k, v)
 
-        if position_bias is not None and self.use_full_bias_size:
-            position_bias = position_bias.expand(q.shape[0], q.shape[2], q.shape[1], k.shape[1])
+        if position_bias is not None and self.use_full_bias_size and (self.use_flash_attention == "fa2" or self.use_flash_attention == "triton"):
+            position_bias = position_bias.expand(q.shape[0], q.shape[2], q.shape[1], k.shape[1]).contiguous()
 
         if self.use_flash_attention == "fa2":
             output = flash_attn_func(q, k, v, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
