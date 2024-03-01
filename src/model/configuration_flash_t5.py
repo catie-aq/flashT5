@@ -6,7 +6,8 @@ import logging
 from transformers import T5Config
 
 AUTO_MAP = {
-    "AutoModel": "modeling_flash_t5.FlashT5ForConditionalGeneration"
+    "AutoModel": "modeling_flash_t5.FlashT5ForConditionalGeneration",
+    "AutoModelForSeq2SeqLM": "modeling_flash_t5.FlashT5ForConditionalGeneration"
 }
 
 class FlashT5Config(T5Config):
