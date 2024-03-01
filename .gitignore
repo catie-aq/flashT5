@@ -3,3 +3,4 @@ flash-t5*/
 nightly/
 nohup.out
 .*
+wandb/
