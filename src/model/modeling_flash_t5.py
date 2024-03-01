@@ -35,15 +35,15 @@ except ImportError:
     gated_mlp = None
 
 try:
-    #from flash_attn import flash_attn_kvpacked_func
-    from ..utils.fa2_lib.fa2_compilable import flash_attn_kvpacked_func
+    #from flash_attn import flash_attn_kvpacked_func, flash_attn_func
+    from ..utils.fa2_lib.fa2_compilable import flash_attn_kvpacked_func, flash_attn_func
 except ImportError:
-    flash_attn_kvpacked_func = None
+    flash_attn_kvpacked_func, flash_attn_func = None, None
 
 from ..utils.attn_ref import attn_ref
 
 from .configuration_flash_t5 import FlashT5Config
-from ..utils.positional_encoding import ALiBiPositionalEncoding, RelativePositionalEncoding
+from ..utils.positional_encoding import ALiBiPositionalEncoding, RelativePositionalEncoding, RotaryPositionalEncoding
 
 @dataclass
 class EncoderOutput(ModelOutput):
@@ -191,11 +191,11 @@ class FlashT5LayerFF(nn.Module):
 
 
 class FlashT5Attention(nn.Module, ModuleUtilsMixin):
-    def __init__(self, config: FlashT5Config, has_relative_attention_bias=False):
+    def __init__(self, config: FlashT5Config, has_positional_encoding=False, is_causal=False):
         super().__init__()
         self.is_decoder = config.is_decoder
-        self.has_relative_attention_bias = has_relative_attention_bias
-        self.is_causal = self.is_decoder and (not self.has_relative_attention_bias)
+        self.has_positional_encoding = has_positional_encoding
+        self.is_causal = is_causal
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
         self.relative_attention_max_distance = config.relative_attention_max_distance
         self.d_model = config.d_model
@@ -211,21 +211,23 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
 
         if self.use_flash_attention == "triton" and flash_attention_triton is None:
             raise ImportError("flash_attention_triton is not available")
-        elif self.use_flash_attention == "fa2" and flash_attn_kvpacked_func is None:
+        elif self.use_flash_attention == "fa2" and flash_attn_func is None:
             raise ImportError("Flash Attention 2 is not available")
 
         assert (self.p_dropout == 0.0) or (self.use_flash_attention != "triton"), "Triton attention does not support dropout"
 
-        if self.position_encoding_type == "ALiBi" and has_relative_attention_bias:
+        self.pe_encoding = None
+        if self.position_encoding_type == "ALiBi" and has_positional_encoding:
             # build alibi matrix with an upper bound on seq length
             self.pe_encoding = ALiBiPositionalEncoding(self.max_sequence_length, self.n_heads, config.alibi_mode, config.use_randomized_position_encoding)
-        elif self.position_encoding_type == "t5" and has_relative_attention_bias:
+        elif self.position_encoding_type == "t5" and has_positional_encoding:
             self.pe_encoding = RelativePositionalEncoding(self.relative_attention_num_buckets, self.relative_attention_max_distance, self.n_heads, self.max_sequence_length, config.use_randomized_position_encoding)
-        else:
-            self.pe_encoding = None
+        elif self.position_encoding_type == "RoPE":
+            self.pe_encoding = RotaryPositionalEncoding(int(self.key_value_proj_dim * config.rotary_emb_fraction), self.max_sequence_length, config.rotary_base, config.rotary_interleaved, config.rotary_scale_base, config.use_randomized_position_encoding)
 
         self.Wq = nn.Linear(self.d_model, self.inner_dim, bias=False)
-        self.Wkv = nn.Linear(self.d_model, 2 * self.inner_dim, bias=False)
+        self.Wk = nn.Linear(self.d_model, self.inner_dim, bias=False)
+        self.Wv = nn.Linear(self.d_model, self.inner_dim, bias=False)
         self.o = nn.Linear(self.inner_dim, self.d_model, bias=False)
 
     def forward(
@@ -244,31 +246,34 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         key_length = seq_length if key_value_states is None else key_value_states.shape[1]
         q = self.Wq(hidden_states)
         if key_value_states is None:
-            kv = self.Wkv(hidden_states)
+            k = self.Wk(hidden_states)
+            v = self.Wv(hidden_states)
         else:
-            kv = self.Wkv(key_value_states)
+            k = self.Wk(key_value_states)
+            v = self.Wv(key_value_states)
 
         q = q.view(batch_size, seq_length, self.n_heads, self.key_value_proj_dim)
-        kv = kv.view(batch_size, key_length, 2, self.n_heads, self.key_value_proj_dim)
+        k = k.view(batch_size, key_length, self.n_heads, self.key_value_proj_dim)
+        v = v.view(batch_size, key_length, self.n_heads, self.key_value_proj_dim)
 
         if position_bias is None and self.pe_encoding is not None:
-            q, kv, _, position_bias = self.pe_encoding(q, kv, None)
+            q, k, v, position_bias = self.pe_encoding(q, k, v)
 
-        if self.use_full_bias_size:
-            position_bias = position_bias.expand(q.shape[0], q.shape[2], q.shape[1], kv.shape[1])
+        if position_bias is not None and self.use_full_bias_size:
+            position_bias = position_bias.expand(q.shape[0], q.shape[2], q.shape[1], k.shape[1])
 
         if self.use_flash_attention == "fa2":
-            output = flash_attn_kvpacked_func(q, kv, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
+            output = flash_attn_func(q, k, v, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
         elif self.use_flash_attention == "triton":
             q = q.permute(0, 2, 1, 3)
-            kv = kv.permute(2, 0, 3, 1, 4)
-            k,v = kv.unbind(0)
+            k = k.permute(0, 2, 1, 3)
+            v = v.permute(0, 2, 1, 3)
             output = flash_attention_triton(q, k, v, position_bias, self.is_causal, self.softmax_scale)
             output = output.permute(0, 2, 1, 3)
         else: # use flash attention
             q = q.permute(0, 2, 1, 3)
-            kv = kv.permute(2, 0, 3, 1, 4)
-            k,v = kv.unbind(0)
+            k = k.permute(0, 2, 1, 3)
+            v = v.permute(0, 2, 1, 3)
             output = attn_ref(q, k, v, position_bias, dropout_p=self.p_dropout, sm_scale=self.softmax_scale, causal=self.is_causal)
             output = output.permute(0, 2, 1, 3)
 
@@ -277,9 +282,9 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
 
 
 class FlashT5LayerSelfAttention(nn.Module):
-    def __init__(self, config, has_relative_attention_bias=False):
+    def __init__(self, config, has_positional_encoding=False):
         super().__init__()
-        self.self_attention = FlashT5Attention(config, has_relative_attention_bias=has_relative_attention_bias)
+        self.self_attention = FlashT5Attention(config, has_positional_encoding=has_positional_encoding, is_causal=config.is_decoder)
         self.layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon, use_triton_layernorm=config.use_triton_layernorm)
         self.dropout = nn.Dropout(config.dropout_rate)
 
@@ -303,7 +308,7 @@ class FlashT5LayerSelfAttention(nn.Module):
 class FlashT5LayerCrossAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.cross_attention = FlashT5Attention(config, has_relative_attention_bias=False)
+        self.cross_attention = FlashT5Attention(config, has_positional_encoding=False)
         self.layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon, use_triton_layernorm=config.use_triton_layernorm)
         self.dropout = nn.Dropout(config.dropout_rate)
 
@@ -327,11 +332,11 @@ class FlashT5LayerCrossAttention(nn.Module):
 
 
 class FlashT5Block(nn.Module):
-    def __init__(self, config, has_relative_attention_bias=False):
+    def __init__(self, config, has_positional_encoding=False):
         super().__init__()
         self.is_decoder = config.is_decoder
 
-        self.self_attention_layer = FlashT5LayerSelfAttention(config, has_relative_attention_bias=has_relative_attention_bias)
+        self.self_attention_layer = FlashT5LayerSelfAttention(config, has_positional_encoding=has_positional_encoding)
 
         if self.is_decoder:
             self.cross_attention_layer = FlashT5LayerCrossAttention(config)
@@ -384,7 +389,7 @@ class FlashT5Stack(nn.Module, ModuleUtilsMixin):
         self.use_flash_attention = config.use_flash_attention
 
         self.block = nn.ModuleList(
-            [FlashT5Block(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
+            [FlashT5Block(config, has_positional_encoding=bool(i == 0)) for i in range(config.num_layers)]
         )
 
         self.final_layer_norm = FlashT5LayerNorm(config.d_model, eps=config.layer_norm_epsilon, use_triton_layernorm=config.use_triton_layernorm)
@@ -477,9 +482,10 @@ class FlashT5PreTrainedModel(PreTrainedModel):
             key_value_proj_dim = self.config.d_kv
             n_heads = self.config.num_heads
             module.Wq.weight.data.normal_(mean=0.0, std=factor * ((d_model * key_value_proj_dim) ** -0.5))
-            module.Wkv.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
+            module.Wk.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
+            module.Wv.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
             module.o.weight.data.normal_(mean=0.0, std=factor * ((n_heads * key_value_proj_dim) ** -0.5))
-            if module.has_relative_attention_bias:
+            if module.has_positional_encoding:
                 if hasattr(module.pe_encoding, "relative_attention_bias"):
                     module.pe_encoding.relative_attention_bias.weight.data.normal_(mean=0.0, std=factor * ((d_model) ** -0.5))
 
@@ -487,7 +493,6 @@ class FlashT5PreTrainedModel(PreTrainedModel):
         decoder_start_token_id = self.config.decoder_start_token_id
         pad_token_id = self.config.pad_token_id
 
-        assert decoder_start_token_id is not None and pad_token_id is not None
         shifted_input_ids = input_ids.new_zeros(input_ids.shape)
         shifted_input_ids[..., 1:] = input_ids[..., :-1].clone()
         shifted_input_ids[..., 0] = decoder_start_token_id

@@ -31,6 +31,10 @@ class FlashT5Config(T5Config):
         use_triton_gated_mlp=False,
         use_gelu_act=True,
         use_full_bias_size=False,
+        rotary_emb_fraction=1.0,
+        rotary_base=10000,
+        rotary_interleaved=False,
+        rotary_scale_base=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -51,6 +55,10 @@ class FlashT5Config(T5Config):
         self.use_triton_gated_mlp = use_triton_gated_mlp
         self.use_gelu_act = use_gelu_act
         self.use_full_bias_size = use_full_bias_size
+        self.rotary_base = rotary_base
+        self.rotary_interleaved = rotary_interleaved
+        self.rotary_scale_base = rotary_scale_base
+        self.rotary_emb_fraction = rotary_emb_fraction
 
         self.auto_map = AUTO_MAP
 
