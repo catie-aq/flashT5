@@ -549,7 +549,7 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
-        max_length = None,
+        max_length = 32,
         **kwargs,
     ) -> torch.LongTensor:
         """
