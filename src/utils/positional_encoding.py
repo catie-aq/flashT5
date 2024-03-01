@@ -103,7 +103,7 @@ class RelativePositionalEncoding(nn.Module):
 
         query_length = q.shape[1]
         key_length = k.shape[1] if k is not None else query_length
-        bias = self.compute_bias(query_length, key_length, device=q.device).to(q.dtype)
+        bias = self.compute_bias(query_length, key_length, device=q.device).contiguous().to(q.dtype)
 
         return q, k, v, bias
 
@@ -198,7 +198,7 @@ class ALiBiPositionalEncoding(nn.Module):
         else:
             bias = self.alibi_bias[:, :, :query_length, :key_length].to(q.device)
 
-        return q, k, v, bias
+        return q, k, v, bias.to(q.dtype).contiguous()
 
 class RotaryPositionalEncoding(nn.Module):
 
