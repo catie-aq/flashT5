@@ -7,7 +7,9 @@ from transformers import T5Config
 
 AUTO_MAP = {
     "AutoModel": "modeling_flash_t5.FlashT5ForConditionalGeneration",
-    "AutoModelForSeq2SeqLM": "modeling_flash_t5.FlashT5ForConditionalGeneration"
+    "AutoModelForSeq2SeqLM": "modeling_flash_t5.FlashT5ForConditionalGeneration",
+    "AutoModelForTokenClassification": "custom_heads_flash_t5.FlashT5ForTokenClassification",
+    "AutoModelForTokenClassification": "custom_heads_flash_t5.FlashT5ForQuestionAnswering",
 }
 
 class FlashT5Config(T5Config):
