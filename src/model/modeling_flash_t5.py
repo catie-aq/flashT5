@@ -2,8 +2,7 @@
 
 import copy
 import math
-from typing import Optional, Tuple
-from dataclasses import dataclass
+from typing import Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -11,7 +10,7 @@ from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
 
 from transformers.modeling_utils import ModuleUtilsMixin
-from transformers.modeling_outputs import ModelOutput
+from transformers.modeling_outputs import ModelOutput, Seq2SeqModelOutput, BaseModelOutput, Seq2SeqLMOutput
 from transformers import PreTrainedModel
 
 try:
@@ -44,18 +43,6 @@ from ..utils.attn_ref import attn_ref
 
 from .configuration_flash_t5 import FlashT5Config
 from ..utils.positional_encoding import ALiBiPositionalEncoding, RelativePositionalEncoding, RotaryPositionalEncoding
-
-@dataclass
-class EncoderOutput(ModelOutput):
-    hidden_states: torch.FloatTensor = None
-    attention_mask: torch.FloatTensor = None
-
-
-@dataclass
-class Seq2SeqLMOutput(ModelOutput):
-    loss: torch.FloatTensor = None
-    logits: torch.FloatTensor = None
-    encoder_outputs: EncoderOutput = None
 
 class FlashT5CrossEntropyLoss(nn.Module):
     def __init__(self, z_loss_factor=0.0, label_smoothing=0.0, use_triton_crossentropy=False):
@@ -401,11 +388,14 @@ class FlashT5Stack(nn.Module, ModuleUtilsMixin):
         attention_mask=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
-    ) -> EncoderOutput:
+        inputs_embeds=None,
+    ) -> BaseModelOutput:
         input_shape = input_ids.size()
         batch_size, seq_length = input_shape
 
-        inputs_embeds = self.embed_tokens(input_ids)
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
         if torch.is_autocast_enabled() and input_ids.device.type == 'cuda':
             inputs_embeds = inputs_embeds.to(torch.get_autocast_gpu_dtype())
 
@@ -444,9 +434,8 @@ class FlashT5Stack(nn.Module, ModuleUtilsMixin):
         hidden_states = self.final_layer_norm(hidden_states).type_as(hidden_states)
         hidden_states = self.dropout(hidden_states)
 
-        return EncoderOutput(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
+        return BaseModelOutput(
+            last_hidden_state=hidden_states
         )
 
 class FlashT5PreTrainedModel(PreTrainedModel):
@@ -459,7 +448,7 @@ class FlashT5PreTrainedModel(PreTrainedModel):
     base_model_prefix = "transformer"
     is_parallelizable = False
     supports_gradient_checkpointing = True
-    _no_split_modules = ["T5Block"]
+    _no_split_modules = ["FlashT5Block"]
     _keep_in_fp32_modules = []
 
     def _init_weights(self, module):
@@ -501,6 +490,91 @@ class FlashT5PreTrainedModel(PreTrainedModel):
         shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
 
         return shifted_input_ids
+
+
+class FlashT5Model(FlashT5PreTrainedModel):
+
+    def __init__(self, config: FlashT5Config):
+        super().__init__(config)
+        self.shared = nn.Embedding(config.vocab_size, config.d_model)
+
+        encoder_config = copy.deepcopy(config)
+        encoder_config.is_decoder = False
+        encoder_config.use_cache = False
+        encoder_config.is_encoder_decoder = False
+        self.encoder = FlashT5Stack(encoder_config, self.shared)
+
+        decoder_config = copy.deepcopy(config)
+        decoder_config.is_decoder = True
+        decoder_config.is_encoder_decoder = False
+        decoder_config.num_layers = config.num_decoder_layers
+        self.decoder = FlashT5Stack(decoder_config, self.shared)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+        # Model parallel
+        self.model_parallel = False
+        self.device_map = None
+
+    def get_input_embeddings(self):
+        return self.shared
+
+    def set_input_embeddings(self, new_embeddings):
+        self.shared = new_embeddings
+        self.encoder.set_input_embeddings(new_embeddings)
+        self.decoder.set_input_embeddings(new_embeddings)
+
+    def get_encoder(self):
+        return self.encoder
+
+    def get_decoder(self):
+        return self.decoder
+
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        decoder_input_ids: Optional[torch.LongTensor] = None,
+        decoder_attention_mask: Optional[torch.BoolTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        decoder_head_mask: Optional[torch.FloatTensor] = None,
+        cross_attn_head_mask: Optional[torch.Tensor] = None,
+        encoder_outputs: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        decoder_inputs_embeds: Optional[torch.Tensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple[torch.FloatTensor], Seq2SeqModelOutput]:
+
+        # Encode if needed (training, first prediction pass)
+        if encoder_outputs is None:
+            encoder_outputs = self.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds
+            )
+
+        hidden_states = encoder_outputs[0]
+
+        # Decode
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            inputs_embeds=decoder_inputs_embeds,
+            encoder_hidden_states=hidden_states,
+            encoder_attention_mask=attention_mask
+        )
+
+        return Seq2SeqModelOutput(
+            last_hidden_state=decoder_outputs.last_hidden_state,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+        )
 
 class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
 

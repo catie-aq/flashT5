@@ -9,7 +9,8 @@ AUTO_MAP = {
     "AutoModel": "modeling_flash_t5.FlashT5ForConditionalGeneration",
     "AutoModelForSeq2SeqLM": "modeling_flash_t5.FlashT5ForConditionalGeneration",
     "AutoModelForTokenClassification": "custom_heads_flash_t5.FlashT5ForTokenClassification",
-    "AutoModelForTokenClassification": "custom_heads_flash_t5.FlashT5ForQuestionAnswering",
+    "AutoModelForQuestionAnswering": "custom_heads_flash_t5.FlashT5ForQuestionAnswering",
+    "AutoModelForSequenceClassification": "custom_heads_flash_t5.FlashT5ForSequenceClassification",
 }
 
 class FlashT5Config(T5Config):
