@@ -1,5 +1,7 @@
 # From: https://github.com/huggingface/transformers/blob/main/src/transformers/models/t5/modeling_t5.py
 
+from dataclasses import dataclass
+
 import copy
 import math
 from typing import Optional, Tuple, Union
@@ -10,7 +12,7 @@ from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
 
 from transformers.modeling_utils import ModuleUtilsMixin
-from transformers.modeling_outputs import ModelOutput, Seq2SeqModelOutput, BaseModelOutput, Seq2SeqLMOutput
+from transformers.modeling_outputs import ModelOutput, Seq2SeqModelOutput, BaseModelOutput
 from transformers import PreTrainedModel
 
 try:
@@ -43,6 +45,18 @@ from ..utils.attn_ref import attn_ref
 
 from .configuration_flash_t5 import FlashT5Config
 from ..utils.positional_encoding import ALiBiPositionalEncoding, RelativePositionalEncoding, RotaryPositionalEncoding
+
+@dataclass
+class EncoderOutput(ModelOutput):
+    hidden_states: torch.FloatTensor = None
+    attention_mask: torch.FloatTensor = None
+    
+@dataclass
+class Seq2SeqLMOutput(ModelOutput):
+    loss: torch.FloatTensor = None
+    logits: torch.FloatTensor = None
+    encoder_outputs: EncoderOutput = None
+
 
 class FlashT5CrossEntropyLoss(nn.Module):
     def __init__(self, z_loss_factor=0.0, label_smoothing=0.0, use_triton_crossentropy=False):
