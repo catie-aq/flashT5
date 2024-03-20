@@ -44,7 +44,7 @@ except ImportError:
 from ..utils.attn_ref import attn_ref
 
 from .configuration_flash_t5 import FlashT5Config
-from ..utils.positional_encoding import ALiBiPositionalEncoding, RelativePositionalEncoding, RotaryPositionalEncoding
+from ..utils.positional_encoding import ALiBiPositionalEncoding, RelativePositionalEncoding, RotaryPositionalEncoding, FIRE
 
 @dataclass
 class EncoderOutput(ModelOutput):
@@ -225,6 +225,8 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
             self.pe_encoding = RelativePositionalEncoding(self.relative_attention_num_buckets, self.relative_attention_max_distance, self.n_heads, self.max_sequence_length, config.use_randomized_position_encoding)
         elif self.position_encoding_type == "RoPE":
             self.pe_encoding = RotaryPositionalEncoding(int(self.key_value_proj_dim * config.rotary_emb_fraction), self.max_sequence_length, config.rotary_base, config.rotary_interleaved, config.rotary_scale_base, config.use_randomized_position_encoding)
+        elif self.position_encoding_type == "FIRE":
+            self.pe_encoding = FIRE(num_heads=self.n_heads, mlp_width=config.fire_mlp_width, init_c=0.1, init_L=self.max_sequence_length)
 
         self.Wq = nn.Linear(self.d_model, self.inner_dim, bias=False)
         self.Wk = nn.Linear(self.d_model, self.inner_dim, bias=False)
@@ -721,5 +723,4 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
         return Seq2SeqLMOutput(
             loss=loss,
             logits=lm_logits,
-            encoder_outputs=encoder_outputs,
         )

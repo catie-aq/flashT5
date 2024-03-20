@@ -39,6 +39,7 @@ class FlashT5Config(T5Config):
         rotary_base=10000,
         rotary_interleaved=False,
         rotary_scale_base=None,
+        fire_mlp_width=32,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -63,6 +64,7 @@ class FlashT5Config(T5Config):
         self.rotary_interleaved = rotary_interleaved
         self.rotary_scale_base = rotary_scale_base
         self.rotary_emb_fraction = rotary_emb_fraction
+        self.fire_mlp_width = fire_mlp_width
 
         self.auto_map = AUTO_MAP
 
