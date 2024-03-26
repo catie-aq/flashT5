@@ -4,7 +4,7 @@
 
 FAT5 (for **F**lash **A**ttention **T5**) is an implementation of T5 in PyTorch with an UL2 objective optimized for GPGPU for both training and inference.
 It uses an experimental feature for using [Flash Attention (v2)](https://arxiv.org/abs/2307.08691) with relative position encoding biases
-that allow to train or finetune the model on longer sequence lengths than the original T5. It also has support for other positional embeddings such as RoPE or ALiBi.
+that allow to train or finetune the model on longer sequence lengths than the original T5. It also has support for other positional embeddings such as RoPE, ALiBi or FIRE.
 
 ## Motivation
 
