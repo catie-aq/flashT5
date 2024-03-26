@@ -214,8 +214,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dY = dY.view(-1, dim)
         X, W, r = ctx.saved_tensors
         n_rows, n_cols = dY.shape
-        dX = torch.empty_like(dY)
-        dW = torch.empty_like(dY)
 
         dW, dX = torch.ops.flasht5.rmsnorm_triton_bwd(dY, r, X, W, ctx.eps, n_cols, n_rows, ctx.BLOCK_SIZE, ctx.num_warps)
 
