@@ -370,7 +370,7 @@ class FIRE(nn.Module):
         self.L_multiplier = nn.Parameter(torch.tensor(1.0))
         self.eps = eps
 
-    def apply_fire(self, x):
+    def apply_fire(self, seq_length, device):
         """
         Compute FIRE attention bias.
 
@@ -382,10 +382,9 @@ class FIRE(nn.Module):
         attention bias,
         shape [1, num_heads, seq_len, seq_len]
         """
-        seq_length = x.size(1)
         positions = torch.arange(seq_length,
-        dtype=torch.float,
-        device=x.device)
+        dtype=torch.float32,
+        device=device)
 
         rel_distance = positions[:, None] - positions[None, :]
 
@@ -396,7 +395,7 @@ class FIRE(nn.Module):
 
         # Amplifying differences among local positions
         # with log transform
-        rel_distance = torch.log(
+        rel_distance = torch.sign(rel_distance) * torch.log(
         torch.abs(self.c * rel_distance) + 1
         )
         pos_normalizer = torch.log(
@@ -411,6 +410,6 @@ class FIRE(nn.Module):
 
     def forward(self, q, k=None, v=None):
 
-        bias = self.apply_fire(q).contiguous().to(q.dtype)
+        bias = self.apply_fire(q.shape[1], device=q.device).contiguous().to(q.dtype)
 
         return q, k, v, bias
