@@ -40,41 +40,10 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
         self.causal = causal
         self.random_chunk = random_chunk
 
-    def __call__(self, examples: List[Dict[str, np.ndarray]]) -> BatchEncoding:
+    def is_special_token(self, x):
+        return (x <= self.extra_ids[0]) & (x >= self.extra_ids[-1])
 
-        input_batch_size = len(examples)
-
-        # Sample a list of denoiser
-        denoisers_sample = np.random.choice(range(len(self.denoiser_list)), input_batch_size, p=self.denoiser_proportions)
-
-        # truncate lengths
-        truncated_examples = []
-        for i, x in enumerate(examples):
-            max_len = self.denoiser_optimal_len[denoisers_sample[i]][0]
-            if x["length"] > max_len:
-                start = 0
-                if self.random_chunk:
-                    start = np.random.randint(0, x["length"] - max_len)
-                new_input_ids = x["input_ids"][:, start:start+max_len]
-                new_input_ids = x["input_ids"][:, start:start+max_len]
-                new_length = np.array(max_len)
-                truncated_examples.append({"input_ids": new_input_ids, "length": new_length})
-            else:
-                truncated_examples.append(x)
-
-        examples = truncated_examples
-
-        spans_noise_masks = [self.random_spans_noise_mask(x["length"], self.denoiser_list[denoisers_sample[i]])
-                for i, x in enumerate(examples)]
-
-        input_ids_sentinel = [self.create_sentinel_ids(x.astype(np.int8)) for x in spans_noise_masks]
-        labels_sentinel = [self.create_sentinel_ids((~x).astype(np.int8)) for x in spans_noise_masks]
-
-        input_ids = [self.filter_input_ids(x["input_ids"], input_ids_sentinel[i], np.expand_dims(self.prefixes[denoisers_sample[i]], axis=0)) for i, x in enumerate(examples)]
-        labels = [self.filter_input_ids(x["input_ids"], labels_sentinel[i], with_eos=False) for i, x in enumerate(examples)]
-
-        def is_special_token(x):
-            return (x <= self.extra_ids[0]) & (x >= self.extra_ids[-1])
+    def _greedy_packing(self, input_ids, labels):
 
         # Generate batch by greedy concatenate small length (to avoid large padding)
         batch_inputs = []
@@ -99,8 +68,8 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
                           and (concatenated_labels.shape[1] + size_labels < self.max_labels_length)):
 
                         # if we have too much labels used already, pass
-                        num_labels = is_special_token(concatenated_inputs).sum()
-                        num_new_labels = is_special_token(x).sum()
+                        num_labels = self.is_special_token(concatenated_inputs).sum()
+                        num_new_labels = self.is_special_token(x).sum()
                         if (num_labels + num_new_labels) >= len(self.extra_ids):
                             continue
 
@@ -115,8 +84,46 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
             if sum(included_elements) == len(included_elements):
                 included_elements = [False for _ in range(len(input_ids))]
 
-        labels = [np.where(is_special_token(x), self.extra_ids[0] - np.cumsum(is_special_token(x)) + 1, x) for x in batch_labels]
-        input_ids = [np.where(is_special_token(x), self.extra_ids[0] - np.cumsum(is_special_token(x)) + 1, x) for x in batch_inputs]
+        return batch_inputs, batch_labels
+
+    def __call__(self, examples: List[Dict[str, np.ndarray]]) -> BatchEncoding:
+
+        input_batch_size = len(examples)
+
+        # Sample a list of denoiser
+        denoisers_sample = np.random.choice(range(len(self.denoiser_list)), input_batch_size, p=self.denoiser_proportions)
+
+        # truncate lengths
+        truncated_examples = []
+        for i, x in enumerate(examples):
+            max_len = self.denoiser_optimal_len[denoisers_sample[i]][0]
+            if x["length"] > max_len:
+                start = 0
+                if self.random_chunk:
+                    start = np.random.randint(0, x["length"] - max_len)
+                new_input_ids = x["input_ids"][:, start:start+max_len]
+                truncated_examples.append({"input_ids": new_input_ids, "length": np.array(max_len)})
+            else:
+                truncated_examples.append(x)
+
+        examples = truncated_examples
+
+        spans_noise_masks = [self.random_spans_noise_mask(x["length"], self.denoiser_list[denoisers_sample[i]])
+                for i, x in enumerate(examples)]
+
+        input_ids_sentinel = [self.create_sentinel_ids(x.astype(np.int8)) for x in spans_noise_masks]
+        labels_sentinel = [self.create_sentinel_ids((~x).astype(np.int8)) for x in spans_noise_masks]
+
+        input_ids = [self.filter_input_ids(x["input_ids"], input_ids_sentinel[i], np.expand_dims(self.prefixes[denoisers_sample[i]], axis=0)) for i, x in enumerate(examples)]
+        labels = [self.filter_input_ids(x["input_ids"], labels_sentinel[i], with_eos=False) for i, x in enumerate(examples)]
+
+        if len(input_ids) == self.batch_size:
+            batch_inputs, batch_labels = input_ids, labels
+        else:
+            batch_inputs, batch_labels = self._greedy_packing(input_ids, labels)
+
+        labels = [np.where(self.is_special_token(x), self.extra_ids[0] - np.cumsum(self.is_special_token(x)) + 1, x) for x in batch_labels]
+        input_ids = [np.where(self.is_special_token(x), self.extra_ids[0] - np.cumsum(self.is_special_token(x)) + 1, x) for x in batch_inputs]
 
         # add a final eos in labels to terminate generating
         labels = [np.concatenate([x, np.full((1,1), self.tokenizer.eos_token_id, dtype=np.int32)], axis=-1) for x in labels]
@@ -182,7 +189,7 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
 
         # case of causal LM
         if noise_density == 0.0:
-            return (self.max_labels_length + int(self.max_labels_length // mean_noise_span_length), inputs_length)
+            return (self.max_labels_length - 2 + int(self.max_length // mean_noise_span_length) - 2, inputs_length)
 
         while _tokens_length_to_inputs_length_targets_length(tokens_length + 1)[0] <= inputs_length:
             tokens_length += 1
