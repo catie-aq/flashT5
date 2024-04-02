@@ -1,7 +1,5 @@
 # From: https://github.com/huggingface/transformers/blob/main/src/transformers/models/t5/modeling_t5.py
 
-from dataclasses import dataclass
-
 import copy
 import math
 from typing import Optional, Tuple, Union
@@ -12,7 +10,7 @@ from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
 
 from transformers.modeling_utils import ModuleUtilsMixin
-from transformers.modeling_outputs import ModelOutput, Seq2SeqModelOutput, BaseModelOutput
+from transformers.modeling_outputs import ModelOutput, Seq2SeqModelOutput, BaseModelOutput, Seq2SeqLMOutput
 from transformers import PreTrainedModel
 
 try:
@@ -45,18 +43,6 @@ from ..utils.attn_ref import attn_ref
 
 from .configuration_flash_t5 import FlashT5Config
 from ..utils.positional_encoding import ALiBiPositionalEncoding, RelativePositionalEncoding, RotaryPositionalEncoding, FIRE
-
-@dataclass
-class EncoderOutput(ModelOutput):
-    hidden_states: torch.FloatTensor = None
-    attention_mask: torch.FloatTensor = None
-
-@dataclass
-class Seq2SeqLMOutput(ModelOutput):
-    loss: torch.FloatTensor = None
-    logits: torch.FloatTensor = None
-    encoder_outputs: EncoderOutput = None
-
 
 class FlashT5CrossEntropyLoss(nn.Module):
     def __init__(self, z_loss_factor=0.0, label_smoothing=0.0, use_triton_crossentropy=False):
@@ -226,7 +212,7 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         elif self.position_encoding_type == "RoPE":
             self.pe_encoding = RotaryPositionalEncoding(int(self.key_value_proj_dim * config.rotary_emb_fraction), self.max_sequence_length, config.rotary_base, config.rotary_interleaved, config.rotary_scale_base, config.use_randomized_position_encoding)
         elif self.position_encoding_type == "FIRE" and has_positional_encoding:
-            self.pe_encoding = FIRE(num_heads=self.n_heads, mlp_width=config.fire_mlp_width, init_c=0.1, init_L=self.max_sequence_length)
+            self.pe_encoding = FIRE(num_heads=self.n_heads, mlp_width=config.fire_mlp_width, init_c=0.1, init_L=self.relative_attention_max_distance)
 
         self.Wq = nn.Linear(self.d_model, self.inner_dim, bias=False)
         self.Wk = nn.Linear(self.d_model, self.inner_dim, bias=False)
@@ -654,16 +640,16 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
         """
         B, _ = input_ids.size()
         labels = torch.zeros(B, 1, dtype=torch.long, device=input_ids.device)
-        encoder_outputs = None
+        encoder_hidden_states = None
 
         for _ in range(max_length):
             out = self.forward(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 decoder_input_ids=labels,
-                encoder_outputs=encoder_outputs,
+                encoder_hidden_states=encoder_hidden_states,
             )
-            encoder_outputs = out.encoder_outputs
+            encoder_hidden_states = out.encoder_hidden_states
             top_labels = out.logits[:, -1].argmax(-1).unsqueeze(-1)
             labels = torch.cat([labels, top_labels], dim=-1)
 
@@ -686,7 +672,7 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
         decoder_input_ids: Optional[torch.LongTensor] = None,
         decoder_attention_mask: Optional[torch.BoolTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        encoder_outputs = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
     ) -> Seq2SeqLMOutput:
         """
             input_ids: B x L_encoder, int64
@@ -694,13 +680,13 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
                 1 for tokens to attend to, 0 for tokens to ignore
             labels: B x L_decoder, int64
         """
-        if encoder_outputs is None:
-            encoder_outputs = self.encoder(
+        if encoder_hidden_states is None:
+            encoder_hidden_states = self.encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-            )
+            )[0]
 
-        hidden_states = encoder_outputs.hidden_states
+        hidden_states = encoder_hidden_states
 
         if labels is not None and decoder_input_ids is None:
             decoder_input_ids = self._shift_right(labels)
@@ -723,4 +709,5 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
         return Seq2SeqLMOutput(
             loss=loss,
             logits=lm_logits,
+            encoder_hidden_states=encoder_hidden_states
         )
