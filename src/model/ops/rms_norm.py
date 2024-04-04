@@ -1,4 +1,4 @@
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# Copyright (c) 2023, Tri Dao.
 # Copyright 2024 CATIE. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,211 +14,277 @@
 # limitations under the License.
 #
 # Modifications to the orignal file
-# - add weights gradients
-# - remove the mask if size is a power of 2
 # - support for torch.compile
 
 import triton
 import triton.language as tl
 import torch
+import math
+import torch.nn.functional as F
 
-
-MAX_FUSED_SIZE = 65536
-next_power_of_2 = triton.next_power_of_2
-
-def calculate_settings(n):
-    BLOCK_SIZE = next_power_of_2(n)
-    if BLOCK_SIZE > MAX_FUSED_SIZE:
-        raise RuntimeError(f"Cannot launch Triton kernel since n = {n} exceeds "\
-                           f"the maximum CUDA blocksize = {MAX_FUSED_SIZE}.")
-    num_warps = 4
-    if   BLOCK_SIZE >= 32768: num_warps = 32
-    elif BLOCK_SIZE >=  8192: num_warps = 16
-    elif BLOCK_SIZE >=  2048: num_warps = 8
-    return BLOCK_SIZE, num_warps
-
+from torch.cuda.amp import custom_fwd, custom_bwd
 
 @triton.jit
-def _rms_layernorm_forward(
-    Y, Y_row_stride,
-    X, X_row_stride,
-    W, W_row_stride,
-    r, r_row_stride,
-    n_cols, eps,
-    BLOCK_SIZE : tl.constexpr,
-    IS_EVEN_X: tl.constexpr
+def _rmsnorm_fwd_kernel(
+    X,  # pointer to the input
+    Y,  # pointer to the output
+    W,  # pointer to the weights
+    Rstd,  # pointer to the 1/std
+    stride_x_row,  # how much to increase the pointer when moving by 1 row
+    stride_y_row,
+    N,  # number of columns in X
+    eps,  # epsilon to avoid division by zero
+    BLOCK_N: tl.constexpr,
+    IS_EVEN_N: tl.constexpr
 ):
-    """
-        Fast RMS Layernorm kernel
-        Inspiration from a Triton tutorial:
-        https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-    """
-    row_idx = tl.program_id(0)
-    col_offsets = tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < n_cols
 
-    Y += row_idx * Y_row_stride
-    X += row_idx * X_row_stride
-    r += row_idx * r_row_stride
+    row = tl.program_id(0)
+    X += row * stride_x_row
+    Y += row * stride_y_row
 
-    if IS_EVEN_X:
-        X_row = tl.load(X + col_offsets).to(tl.float32)
-        W_row = tl.load(W + col_offsets)
+    # Compute mean and variance
+    cols = tl.arange(0, BLOCK_N)
+    x = tl.load(X + cols, mask=cols < N, other=0.0).to(tl.float32)
+
+    xbar = tl.where(cols < N, x, 0.0)
+    var = tl.sum(xbar * xbar, axis=0) / N
+    rstd = 1 / tl.sqrt(var + eps)
+    tl.store(Rstd + row, rstd)
+
+    # Normalize and apply linear transformation
+    mask = cols < N
+    if IS_EVEN_N:
+        w = tl.load(W + cols).to(tl.float32)
     else:
-        X_row = tl.load(X + col_offsets, mask=mask, other=0).to(tl.float32)
-        W_row = tl.load(W + col_offsets, mask=mask, other=0)
+        w = tl.load(W + cols, mask=mask).to(tl.float32)
 
-    row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
-    inv_var = tl.math.rsqrt(row_var + eps)
-    tl.store(r, inv_var)
-    normed = X_row * inv_var
-    normed = normed.to(W_row.dtype) # Exact copy from HF
-    output = normed * W_row
+    x_hat = x * rstd
+    y = x_hat * w
 
-    if IS_EVEN_X:
-        tl.store(Y + col_offsets, output)
+    # Write output
+    if IS_EVEN_N:
+        tl.store(Y + cols, y)
     else:
-        tl.store(Y + col_offsets, output, mask=mask)
+        tl.store(Y + cols, y, mask=mask)
 
 @triton.jit
-def _rms_layernorm_backward(
-    dY, dY_row_stride,
-    X,   X_row_stride,
-    W,   W_row_stride,
-    r,   r_row_stride,
-    dW, dW_row_stride,
-    dX, dX_row_stride,
-    n_cols, eps,
-    BLOCK_SIZE : tl.constexpr,
-    IS_EVEN_X: tl.constexpr
+def _rmsnorm_bwd_kernel(
+    X,  # pointer to the input
+    W,  # pointer to the weights
+    DY,  # pointer to the output gradient
+    DX,  # pointer to the input gradient
+    DW,  # pointer to the partial sum of weights gradient
+    Rstd,  # pointer to the 1/std
+    stride_x_row,  # how much to increase the pointer when moving by 1 row
+    stride_dy_row,
+    stride_dx_row,
+    M,  # number of rows in X
+    N,  # number of columns in X
+    eps,  # epsilon to avoid division by zero
+    rows_per_program,
+    BLOCK_N: tl.constexpr,
+    IS_EVEN_N: tl.constexpr
 ):
-    """
-        Fast RMS Layernorm kernel for the backward pass
-        Inspiration from a Triton tutorial:
-        https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-    """
-    row_idx = tl.program_id(0)
-    col_offsets = tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < n_cols
+    # Map the program id to the elements of X, DX, and DY it should compute.
+    row_block_id = tl.program_id(0)
+    row_start = row_block_id * rows_per_program
+    cols = tl.arange(0, BLOCK_N)
+    mask = cols < N
+    X += row_start * stride_x_row
 
-    dY += row_idx * dY_row_stride
-    X  += row_idx *  X_row_stride
-    r  += row_idx *  r_row_stride
-    dW += row_idx * dW_row_stride
-    dX += row_idx * dX_row_stride
+    DY += row_start * stride_dy_row
+    DX += row_start * stride_dx_row
 
-    if IS_EVEN_X:
-        dY_row = tl.load(dY + col_offsets).to(tl.float32)
-        X_row  = tl.load(X  + col_offsets).to(tl.float32)
-        W_row  = tl.load(W  + col_offsets).to(tl.float32)
-    else:
-        dY_row = tl.load(dY + col_offsets, mask=mask, other=0).to(tl.float32)
-        X_row  = tl.load(X  + col_offsets, mask=mask, other=0).to(tl.float32)
-        W_row  = tl.load(W  + col_offsets, mask=mask, other=0).to(tl.float32)
+    w = tl.load(W + cols, mask=mask).to(tl.float32)
 
-    # Get saved row variance
-    inv_var = tl.load(r).to(tl.float32)
-    normed = X_row * inv_var
-    dW_row = dY_row * normed
+    dw = tl.zeros((BLOCK_N,), dtype=tl.float32)
 
-    dY_W = dY_row * W_row
-    rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
-    output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
+    row_end = min((row_block_id + 1) * rows_per_program, M)
 
-    if IS_EVEN_X:
-        tl.store(dW + col_offsets, dW_row)
-        tl.store(dX + col_offsets, output)
-    else:
-        tl.store(dW + col_offsets, dW_row, mask=mask)
-        tl.store(dX + col_offsets, output, mask=mask)
+    for row in range(row_start, row_end):
+        # Load data to SRAM
+        if IS_EVEN_N:
+            x = tl.load(X + cols).to(tl.float32)
+            dy = tl.load(DY + cols).to(tl.float32)
+        else:
+            x = tl.load(X + cols, mask=mask, other=0).to(tl.float32)
+            dy = tl.load(DY + cols, mask=mask, other=0).to(tl.float32)
+
+        rstd = tl.load(Rstd + row)
+
+        # Compute dx
+        xhat = x * rstd
+        if not IS_EVEN_N:
+            xhat = tl.where(mask, xhat, 0.0)
+
+        wdy = w * dy
+        dw += dy * xhat
+
+        c1 = tl.sum(xhat * wdy, axis=0) / N
+        dx = (wdy - xhat * c1) * rstd
+
+        tl.store(DX + cols, dx, mask=mask)
+
+        X += stride_x_row
+
+        DY += stride_dy_row
+        DX += stride_dx_row
+
+    tl.store(DW + row_block_id * N + cols, dw, mask=mask)
 
 
 # Wrapper for triton kernel for torch.compile - should be unecessary for PyTorch 2.3 ?
-torch.library.define("flasht5::rmsnorm_triton_fwd", "(Tensor X, Tensor W, float eps, int n_cols, int n_rows, int BLOCK_SIZE, int num_warps) -> (Tensor, Tensor)")
+torch.library.define("flasht5::rmsnorm_triton_fwd", "(Tensor X, Tensor W, float eps) -> (Tensor, Tensor)")
 
 @torch.library.impl("flasht5::rmsnorm_triton_fwd", "default")
-def rmsnorm_triton_fwd(X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps):
-    Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device="cuda")
-    r = torch.empty(n_rows, dtype=torch.float32, device="cuda")
+def rmsnorm_triton_fwd(X, weight, eps):
 
-    _rms_layernorm_forward[(n_rows,)](
-        Y, Y.stride(0),
-        X, X.stride(0),
-        W, W.stride(0),
-        r, r.stride(0),
-        n_cols, eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-        IS_EVEN_X=((n_cols % BLOCK_SIZE) == 0),
-        num_warps=num_warps
-    )
+    M, N = X.shape
 
-    return Y, r
+    assert X.stride(-1) == 1
+
+    assert weight.shape == (N,)
+    assert weight.stride(-1) == 1
+
+    # allocate output
+    Y = torch.empty_like(X)
+    assert Y.stride(-1) == 1
+
+    rstd = torch.empty((M,), dtype=torch.float32, device=X.device)
+
+    # Less than 64KB per feature: enqueue fused kernel
+    MAX_FUSED_SIZE = 65536 // X.element_size()
+    BLOCK_N = min(MAX_FUSED_SIZE, triton.next_power_of_2(N))
+    assert N <= BLOCK_N
+
+    # heuristics for number of warps
+    with torch.cuda.device(X.device.index):
+        _rmsnorm_fwd_kernel[(M,)](
+            X,
+            Y,
+            weight,
+            rstd,
+            X.stride(0),
+            Y.stride(0),
+            N,
+            eps,
+            BLOCK_N,
+            (N % BLOCK_N == 0)
+        )
+
+    return Y, rstd
 
 
 @torch.library.impl_abstract("flasht5::rmsnorm_triton_fwd", rmsnorm_triton_fwd)
-def rmsnorm_triton_fwd_abstract(X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps):
-    Y = X.new_empty((n_rows, n_cols))
-    r = X.new_empty((n_rows))
-    return Y, r
+def rmsnorm_triton_fwd_abstract(X, weight, eps):
+    M, N = X.shape
 
-torch.library.define("flasht5::rmsnorm_triton_bwd", "(Tensor dY, Tensor r, Tensor X, Tensor W, float eps, int n_cols, int n_rows, int BLOCK_SIZE, int num_warps) -> (Tensor, Tensor)")
+    Y = torch.empty_like(X)
+    rstd = torch.empty((M,), dtype=torch.float32, device=x.device)
+
+    return Y, rstd
+
+torch.library.define("flasht5::rmsnorm_triton_bwd", "(Tensor dY, Tensor X, Tensor W, Tensor rstd, float eps) -> (Tensor, Tensor)")
 
 @torch.library.impl("flasht5::rmsnorm_triton_bwd", "default")
-def rmsnorm_triton_bwd(dY, r, X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps):
+def rmsnorm_triton_bwd(
+    dy,
+    x,
+    weight,
+    rstd,
+    eps
+):
+    M, N = x.shape
+    assert x.stride(-1) == 1
+    assert dy.stride(-1) == 1
+    assert dy.shape == (M, N)
 
-    dX = torch.empty_like(dY)
-    dW = torch.empty_like(dY)
+    assert weight.shape == (N,)
+    assert weight.stride(-1) == 1
 
-    _rms_layernorm_backward[(n_rows,)](
-        dY, dY.stride(0),
-        X,  X.stride(0),
-        W,  1,
-        r,  1,
-        dW, dW.stride(0),
-        dX, dX.stride(0),
-        n_cols, eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-        IS_EVEN_X=((n_cols % BLOCK_SIZE) == 0),
-        num_warps=num_warps,
-    )
+    # allocate output
+    dx = torch.empty_like(x)
 
-    return dX, dW
+    # Less than 64KB per feature: enqueue fused kernel
+    MAX_FUSED_SIZE = 65536 // x.element_size()
+    BLOCK_N = min(MAX_FUSED_SIZE, triton.next_power_of_2(N))
+
+    assert N <= BLOCK_N
+
+    sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
+    _dw = torch.empty((sm_count, N), dtype=torch.float32, device=weight.device)
+
+    rows_per_program = math.ceil(M / sm_count)
+    grid = (sm_count,)
+    with torch.cuda.device(x.device.index):
+        _rmsnorm_bwd_kernel[grid](
+            x,
+            weight,
+            dy,
+            dx,
+            _dw,
+            rstd,
+            x.stride(0),
+            dy.stride(0),
+            dx.stride(0),
+            M,
+            N,
+            eps,
+            rows_per_program,
+            BLOCK_N,
+            (N % BLOCK_N == 0)
+        )
+    dw = _dw.sum(0).to(weight.dtype)
+
+    return dx, dw
 
 
 @torch.library.impl_abstract("flasht5::rmsnorm_triton_bwd", rmsnorm_triton_bwd)
-def rmsnorm_triton_bwd_abstract(dY, r, X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps):
-    return torch.empty_like(dY), torch.empty_like(dY)
+def rmsnorm_triton_bwd_abstract(dy, x, weight, bias, rstd, eps):
+
+    M, N = x.shape
+    dx = torch.empty_like(x)
+    dw = torch.empty((1, N), dtype=torch.float32, device=weight.device)
+
+
+    return dx, dw
 
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, W, eps):
-        shape = X.shape
-        dim = shape[-1]
-        X = X.view(-1, dim)
-        n_rows, n_cols = X.shape
-        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    @custom_fwd
+    def forward(ctx, X, W, eps=1e-6):
 
-        Y, r = torch.ops.flasht5.rmsnorm_triton_fwd(X, W, eps, n_cols, n_rows, BLOCK_SIZE, num_warps)
+        X_orig_shape = X.shape
+        X = X.reshape(-1, X.shape[-1])
 
+        y, rstd, = torch.ops.flasht5.rmsnorm_triton_fwd(X, W, eps)
+
+        y = y.reshape(X_orig_shape)
+
+        # We don't store y, will be recomputed in the backward pass to save memory
+        ctx.save_for_backward(X, W, rstd)
+        ctx.x_shape_og = X_orig_shape
         ctx.eps = eps
-        ctx.BLOCK_SIZE = BLOCK_SIZE
-        ctx.num_warps  = num_warps
-        ctx.save_for_backward(X, W, r)
-        return Y.view(*shape)
+
+        return y
 
     @staticmethod
     def backward(ctx, dY):
-        shape = dY.shape
-        dim = shape[-1]
-        dY = dY.view(-1, dim)
-        X, W, r = ctx.saved_tensors
-        n_rows, n_cols = dY.shape
+        X, weight, rstd = ctx.saved_tensors
+        dY = dY.reshape(-1, dY.shape[-1])
 
-        dW, dX = torch.ops.flasht5.rmsnorm_triton_bwd(dY, r, X, W, ctx.eps, n_cols, n_rows, ctx.BLOCK_SIZE, ctx.num_warps)
+        assert dY.shape == X.shape
 
-        dX = dX.view(*shape)
-        return dX, dW.sum(0), None
+        dx, dw = torch.ops.flasht5.rmsnorm_triton_bwd(
+            dY,
+            X,
+            weight,
+            rstd,
+            ctx.eps
+        )
+
+        return dx.reshape(ctx.x_shape_og), dw, None
 
 def fast_rms_layernorm(X, W, eps):
     out = Fast_RMS_Layernorm.apply(X, W, eps)

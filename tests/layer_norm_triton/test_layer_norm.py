@@ -39,5 +39,5 @@ def test_layer_norm(batch_size, seqlen, model_dim, dtype):
     input_grad_tri, input.grad = input.grad.clone(), None
     weight_grad_tri = triton_model.weight.grad.clone()
 
-    assert torch.allclose(input_grad_ref, input_grad_tri, atol=1e-0, rtol=0.0)
-    assert torch.allclose(weight_grad_ref, weight_grad_tri, atol=1e-0, rtol=0.0)
+    assert torch.allclose(input_grad_ref, input_grad_tri, atol=1e-2, rtol=0.0)
+    assert torch.allclose(weight_grad_ref, weight_grad_tri, atol=1e-2, rtol=0.0)
