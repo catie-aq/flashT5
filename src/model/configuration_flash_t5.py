@@ -26,7 +26,7 @@ class FlashT5Config(T5Config):
         use_randomized_position_encoding=False,
         label_smoothing=0.0,
         z_loss=None,
-        use_flash_attention=None,
+        attention_type="ref",
         max_sequence_length=1024,
         attention_dropout_rate=0.0,
         alibi_mode="symetric",
@@ -51,7 +51,7 @@ class FlashT5Config(T5Config):
         self.use_randomized_position_encoding = use_randomized_position_encoding
         self.label_smoothing = label_smoothing
         self.z_loss = z_loss
-        self.use_flash_attention = use_flash_attention
+        self.attention_type = attention_type
         self.max_sequence_length = max_sequence_length
         self.alibi_mode = alibi_mode
         self.attention_dropout_rate = attention_dropout_rate

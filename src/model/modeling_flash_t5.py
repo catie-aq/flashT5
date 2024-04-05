@@ -190,18 +190,18 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         self.n_heads = config.num_heads
         self.p_dropout = config.attention_dropout_rate
         self.inner_dim = self.n_heads * self.key_value_proj_dim
-        self.use_flash_attention = config.use_flash_attention
+        self.attention_type = config.attention_type
         self.position_encoding_type = config.position_encoding_type
         self.max_sequence_length = config.max_sequence_length
         self.softmax_scale = 1.0/math.sqrt(self.n_heads)
         self.use_full_bias_size = config.use_full_bias_size
 
-        if self.use_flash_attention == "triton" and flash_attention_triton is None:
+        if self.attention_type == "triton" and flash_attention_triton is None:
             raise ImportError("flash_attention_triton is not available")
-        elif self.use_flash_attention == "fa2" and flash_attn_func is None:
+        elif self.attention_type == "fa2" and flash_attn_func is None:
             raise ImportError("Flash Attention 2 is not available")
 
-        assert (self.p_dropout == 0.0) or (self.use_flash_attention != "triton"), "Triton attention does not support dropout"
+        assert (self.p_dropout == 0.0) or (self.attention_type != "triton"), "Triton attention does not support dropout"
 
         self.pe_encoding = None
         if self.position_encoding_type == "ALiBi" and has_positional_encoding:
@@ -248,12 +248,12 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         if position_bias is None and self.pe_encoding is not None:
             q, k, v, position_bias = self.pe_encoding(q, k, v)
 
-        if position_bias is not None and self.use_full_bias_size and (self.use_flash_attention == "fa2" or self.use_flash_attention == "triton"):
+        if position_bias is not None and self.use_full_bias_size and (self.attention_type == "fa2" or self.attention_type == "triton"):
             position_bias = position_bias.expand(q.shape[0], q.shape[2], q.shape[1], k.shape[1]).contiguous()
 
-        if self.use_flash_attention == "fa2":
+        if self.attention_type == "fa2":
             output = flash_attn_func(q, k, v, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
-        elif self.use_flash_attention == "triton":
+        elif self.attention_type == "triton":
             q = q.permute(0, 2, 1, 3)
             k = k.permute(0, 2, 1, 3)
             v = v.permute(0, 2, 1, 3)
@@ -375,7 +375,6 @@ class FlashT5Stack(nn.Module, ModuleUtilsMixin):
         self.config = config
         self.embed_tokens = embed_tokens
         self.is_decoder = config.is_decoder
-        self.use_flash_attention = config.use_flash_attention
 
         self.block = nn.ModuleList(
             [FlashT5Block(config, has_positional_encoding=bool(i == 0)) for i in range(config.num_layers)]
