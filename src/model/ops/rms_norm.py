@@ -180,7 +180,7 @@ def rmsnorm_triton_fwd_abstract(X, weight, eps):
     M, N = X.shape
 
     Y = torch.empty_like(X)
-    rstd = torch.empty((M,), dtype=torch.float32, device=x.device)
+    rstd = torch.empty((M,), dtype=torch.float32, device=X.device)
 
     return Y, rstd
 
@@ -240,7 +240,7 @@ def rmsnorm_triton_bwd(
 
 
 @torch.library.impl_abstract("flasht5::rmsnorm_triton_bwd", rmsnorm_triton_bwd)
-def rmsnorm_triton_bwd_abstract(dy, x, weight, bias, rstd, eps):
+def rmsnorm_triton_bwd_abstract(dy, x, weight, rstd, eps):
 
     M, N = x.shape
     dx = torch.empty_like(x)
