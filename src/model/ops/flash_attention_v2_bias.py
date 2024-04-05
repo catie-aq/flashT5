@@ -49,23 +49,24 @@ def flash_attn_v2_fwd(q, k, v, bias, causal, sm_scale, BLOCK_M, BLOCK_N, num_war
     o = torch.empty_like(q)
     L = torch.empty((B, H, M), device=q.device, dtype=torch.float32)
 
-    _fwd_kernel[grid](
-        q, k, v, bias, sm_scale,
-        L, o,
-        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-        v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-        o.stride(0), o.stride(1), o.stride(2), o.stride(3),
-        bias_batch_stride, bias_heads_stride,
-        bias.stride(2) if bias is not None else 0,
-        bias.stride(3) if bias is not None else 0,
-        B, H, M, N, P_SEQ,
-        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_DMODEL=D,
-        IS_CAUSAL=causal, LARGER_M=larger_m,
-        DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
-        HAS_BIAS=(bias is not None),
-        num_warps=num_warps, num_stages=num_stages,
-    )
+    with torch.cuda.device(q.device.index):
+        _fwd_kernel[grid](
+            q, k, v, bias, sm_scale,
+            L, o,
+            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+            o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+            bias_batch_stride, bias_heads_stride,
+            bias.stride(2) if bias is not None else 0,
+            bias.stride(3) if bias is not None else 0,
+            B, H, M, N, P_SEQ,
+            BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_DMODEL=D,
+            IS_CAUSAL=causal, LARGER_M=larger_m,
+            DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
+            HAS_BIAS=(bias is not None),
+            num_warps=num_warps, num_stages=num_stages,
+        )
 
     return o, L
 
@@ -103,77 +104,99 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
     delta = torch.empty_like(L)
     grid = (triton.cdiv(M, BLOCK_M), H, B)
 
-    _bwd_preprocess[grid](
-        o, do,
-        delta,
-        o.stride(0), o.stride(1), o.stride(2), o.stride(3),
-        do.stride(0), do.stride(1), do.stride(2), do.stride(3),
-        delta.stride(0), delta.stride(1), delta.stride(2),
-        M,
-        BLOCK_M=BLOCK_M, D_HEAD=D,
-        DIVISIBLE_M=divisible_m,
-    )
+    with torch.cuda.device(q.device.index):
+        _bwd_preprocess[grid](
+            o, do,
+            delta,
+            o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+            do.stride(0), do.stride(1), do.stride(2), do.stride(3),
+            delta.stride(0), delta.stride(1), delta.stride(2),
+            M,
+            BLOCK_M=BLOCK_M, D_HEAD=D,
+            DIVISIBLE_M=divisible_m,
+        )
 
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
 
     HAS_BIAS = bias is not None
     RETURN_DS = HAS_BIAS
-    USE_DS_ATOMIC_ADD = (bias_batch_stride == 0) or (bias_heads_stride == 0)
+    IS_BATCH_REDUCED = (bias_batch_stride == 0)
+    #GROUP_SIZE_BIAS = min(B, 16)
+    GROUP_SIZE_BIAS = B
+
     ds = None
+    locks = None
     if RETURN_DS:
-        ds = torch.empty_like(bias)
-        if USE_DS_ATOMIC_ADD:
-            ds = ds.zero_()
+        if IS_BATCH_REDUCED:
+            if causal:
+                ds = torch.zeros((GROUP_SIZE_BIAS, *bias.shape[1:]), dtype=bias.dtype, device=bias.device)
+            else:
+                ds = torch.empty((GROUP_SIZE_BIAS, *bias.shape[1:]), dtype=bias.dtype, device=bias.device)
+            locks = torch.zeros(2 * GROUP_SIZE_BIAS, dtype=torch.int32, device=q.device)
+        else:
+            if causal:
+                ds = torch.zeros_like(bias)
+            else:
+                ds = torch.empty_like(bias)
 
     grid = (triton.cdiv(N, BLOCK_N), H, B)
-    _bwd_kv_kernel[grid](
-        q, k, v, bias, sm_scale, do,
-        dk, dv, ds,
-        L, delta,
-        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-        v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-        bias_batch_stride, bias_heads_stride,
-        bias.stride(2) if HAS_BIAS else 0,
-        bias.stride(3) if HAS_BIAS else 0,
-        do.stride(0), do.stride(1), do.stride(2), do.stride(3),
-        dk.stride(0), dk.stride(1), dk.stride(2), dk.stride(3),
-        dv.stride(0), dv.stride(1), dv.stride(2), dv.stride(3),
-        B, H, M, N, P_SEQ,
-        BLOCK_M=BLOCK_M, BLOCK_DMODEL=D, BLOCK_N=BLOCK_N, CAUSAL=causal,
-        DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
-        HAS_BIAS=HAS_BIAS,
-        RETURN_DS=RETURN_DS, USE_DS_ATOMIC_ADD=USE_DS_ATOMIC_ADD,
-        num_stages=num_stages, num_warps=num_warps,
-    )
+    with torch.cuda.device(q.device.index):
+        _bwd_kv_kernel[grid](
+            q, k, v, bias, sm_scale, do,
+            dk, dv, ds,
+            L, delta,
+            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+            bias.stride(0) if HAS_BIAS else 0,
+            bias_heads_stride,
+            bias.stride(2) if HAS_BIAS else 0,
+            bias.stride(3) if HAS_BIAS else 0,
+            do.stride(0), do.stride(1), do.stride(2), do.stride(3),
+            dk.stride(0), dk.stride(1), dk.stride(2), dk.stride(3),
+            dv.stride(0), dv.stride(1), dv.stride(2), dv.stride(3),
+            B, H, M, N, P_SEQ,
+            locks,
+            BLOCK_M=BLOCK_M, BLOCK_DMODEL=D, BLOCK_N=BLOCK_N, CAUSAL=causal,
+            DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
+            HAS_BIAS=HAS_BIAS,
+            RETURN_DS=RETURN_DS,
+            IS_BATCH_REDUCED=IS_BATCH_REDUCED,
+            GROUP_SIZE_BIAS=GROUP_SIZE_BIAS,
+            num_stages=num_stages, num_warps=num_warps,
+        )
 
     dq = torch.empty_like(q)
     grid = (triton.cdiv(M, BLOCK_M), H, B)
-    _bwd_q_kernel[grid](
-        q, k, v, bias, sm_scale, do,
-        dq,
-        L, delta,
-        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-        v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-        bias_batch_stride, bias_heads_stride,
-        bias.stride(2) if HAS_BIAS else 0,
-        bias.stride(3) if HAS_BIAS else 0,
-        do.stride(0), do.stride(1), do.stride(2), do.stride(3),
-        dq.stride(0), dq.stride(1), dq.stride(2), dq.stride(3),
-        B, H, M, N, P_SEQ,
-        BLOCK_M=BLOCK_M, BLOCK_DMODEL=D, BLOCK_N=BLOCK_N,
-        CAUSAL=causal, LARGER_M=larger_m,
-        DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
-        HAS_BIAS=HAS_BIAS,
-        num_stages=num_stages, num_warps = num_warps,
-    )
+    with torch.cuda.device(q.device.index):
+        _bwd_q_kernel[grid](
+            q, k, v, bias, sm_scale, do,
+            dq,
+            L, delta,
+            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+            bias_batch_stride, bias_heads_stride,
+            bias.stride(2) if HAS_BIAS else 0,
+            bias.stride(3) if HAS_BIAS else 0,
+            do.stride(0), do.stride(1), do.stride(2), do.stride(3),
+            dq.stride(0), dq.stride(1), dq.stride(2), dq.stride(3),
+            B, H, M, N, P_SEQ,
+            BLOCK_M=BLOCK_M, BLOCK_DMODEL=D, BLOCK_N=BLOCK_N,
+            CAUSAL=causal, LARGER_M=larger_m,
+            DIVISIBLE_M=divisible_m, DIVISIBLE_N=divisible_n,
+            HAS_BIAS=HAS_BIAS,
+            num_stages=num_stages, num_warps = num_warps,
+        )
+
+    if RETURN_DS and IS_BATCH_REDUCED and GROUP_SIZE_BIAS > 1:
+        ds = ds.sum(0, keepdim=True)
 
     return dq, dk, dv, ds
 
 @torch.library.impl_abstract("flasht5::flash_attn_v2_bwd", flash_attn_v2_bwd)
-def cross_entropy_triton_bwd_abstract(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_N, num_warps, num_stages):
+def flash_attn_v2_bwd_abstract(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_N, num_warps, num_stages):
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
@@ -526,11 +549,14 @@ def _bwd_kv_kernel(
     stride_dkz, stride_dkh, stride_dkn, stride_dkk,
     stride_dvz, stride_dvh, stride_dvn, stride_dvk,
     Z, H, M, N, P_SEQ,
+    lock,
     BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr, BLOCK_N: tl.constexpr,
     CAUSAL: tl.constexpr,
     DIVISIBLE_M: tl.constexpr, DIVISIBLE_N: tl.constexpr,
     HAS_BIAS: tl.constexpr,
-    RETURN_DS: tl.constexpr, USE_DS_ATOMIC_ADD: tl.constexpr,
+    RETURN_DS: tl.constexpr,
+    IS_BATCH_REDUCED: tl.constexpr,
+    GROUP_SIZE_BIAS: tl.constexpr,
 ):
     input_dtype = Q.dtype.element_ty
     # -- grid id --
@@ -538,21 +564,31 @@ def _bwd_kv_kernel(
     off_h = tl.program_id(1)
     off_z = tl.program_id(2)
     log2e: tl.constexpr = 1.4426950408889634
-    qk_scale = sm_scale * log2e
 
     # offset pointers for (batch, head)
     Q += off_z * stride_qz + off_h * stride_qh
     K += off_z * stride_kz + off_h * stride_kh
     V += off_z * stride_vz + off_h * stride_vh
     if HAS_BIAS:
-        B += off_z * stride_bz + off_h * stride_bh
+        if IS_BATCH_REDUCED:
+            B += off_h * stride_bh
+        else:
+            B += off_z * stride_bz + off_h * stride_bh
     DO += off_z * stride_doz + off_h * stride_doh
 
     # offset pointers for batch/head
     DK += off_z * stride_dkz + off_h * stride_dkh
     DV += off_z * stride_dvz + off_h * stride_dvh
+
+    # offset pointer for ds tensor and locks for the reduction
     if RETURN_DS:
-        DS += off_z * stride_bz + off_h * stride_bh
+        if IS_BATCH_REDUCED:
+            lock_id = (off_z % GROUP_SIZE_BIAS)
+            lock += lock_id
+            count = lock + GROUP_SIZE_BIAS
+            DS += lock_id * stride_bz + off_h * stride_bh
+        else:
+            DS += off_z * stride_bz + off_h * stride_bh
 
     # offset pointers for batch/head
     D += (off_z * H + off_h) * M
@@ -665,22 +701,40 @@ def _bwd_kv_kernel(
             ds = tl.where(valid_mask, ds, 0.0)
         if CAUSAL:
             ds = tl.where(causal_mask, ds, 0.0)
-        ds = ds.to(input_dtype)
 
+        ds = ds.to(input_dtype)
+        # compute dk = dot(ds.T, q) masking
+        dk += tl.dot(tl.trans(ds), q)
+
+        # store ds
         if RETURN_DS:
-            if DIVISIBLE_M and DIVISIBLE_N:
-                if USE_DS_ATOMIC_ADD:
-                    tl.atomic_add(ds_ptrs, ds)
+            if IS_BATCH_REDUCED and (Z != GROUP_SIZE_BIAS):
+                # wait for the lock
+                while tl.atomic_cas(lock, 0, 1) == 1:
+                    pass
+
+                counter = tl.load(count)
+                # First store doesn't accumulate
+                if counter == 0:
+                    tl.atomic_xchg(count, 1)
                 else:
+                    if DIVISIBLE_M and DIVISIBLE_N:
+                        ds += tl.load(ds_ptrs)
+                    else:
+                        ds += tl.load(ds_ptrs, mask=mask_m[:, None] & mask_n[None, :])
+
+                if DIVISIBLE_M and DIVISIBLE_N:
                     tl.store(ds_ptrs, ds)
-            else:
-                if USE_DS_ATOMIC_ADD:
-                    tl.atomic_add(ds_ptrs, ds, mask=mask_m[:, None] & mask_n[None, :])
                 else:
                     tl.store(ds_ptrs, ds, mask=mask_m[:, None] & mask_n[None, :])
 
-        # compute dk = dot(ds.T, q) masking
-        dk += tl.dot(tl.trans(ds), q)
+                # Release the lock
+                tl.atomic_xchg(lock, 0)
+            else:
+                if DIVISIBLE_M and DIVISIBLE_N:
+                    tl.store(ds_ptrs, ds)
+                else:
+                    tl.store(ds_ptrs, ds, mask=mask_m[:, None] & mask_n[None, :])
 
         # increment pointers
         q_ptrs += BLOCK_M * stride_qm
