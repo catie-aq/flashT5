@@ -71,7 +71,7 @@ We can see a clear improvement in memory usage in our implementation for larger 
 ## Install
 
 Training the model requires a custom installation of Flash Attention 2 using [this patch](https://github.com/Dao-AILab/flash-attention/pull/617).
-Another possibility is to rely on triton version of Flash Attention 2 but the model can only be trained on `float16` (as `bfloat16` is not supported for bias with shape `(1,h,q,k)`). A possibility in this case is to train the model with full bias size `(b, h, q, k)` but this come at the cost of some additional memory (see the option `"use_full_bias_size"` in the config).
+Another possibility is to rely on the [triton version](src/model/ops/flash_attention_v2_bias.py) of Flash Attention 2.
 
 ## Pretraining
 
