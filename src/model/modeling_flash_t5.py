@@ -193,8 +193,12 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         self.attention_type = config.attention_type
         self.position_encoding_type = config.position_encoding_type
         self.max_sequence_length = config.max_sequence_length
-        self.softmax_scale = 1.0/math.sqrt(self.n_heads)
+        self.softmax_scale = config.attention_scale if config.attention_scale is not None else 1.0/math.sqrt(self.n_heads)
         self.use_full_bias_size = config.use_full_bias_size
+        self.use_masking = config.use_masking
+
+        if self.use_masking and not self.use_full_bias_size:
+            raise ValueError("Masking can only be used with full batch size.")
 
         if self.attention_type == "triton" and flash_attention_triton is None:
             raise ImportError("flash_attention_triton is not available")
@@ -206,13 +210,29 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         self.pe_encoding = None
         if self.position_encoding_type == "ALiBi" and has_positional_encoding:
             # build alibi matrix with an upper bound on seq length
-            self.pe_encoding = ALiBiPositionalEncoding(self.max_sequence_length, self.n_heads, config.alibi_mode, config.use_randomized_position_encoding)
+            self.pe_encoding = ALiBiPositionalEncoding(self.max_sequence_length,
+                                                       self.n_heads,
+                                                       config.alibi_mode,
+                                                       randomized_position=config.use_randomized_position_encoding)
         elif self.position_encoding_type == "t5" and has_positional_encoding:
-            self.pe_encoding = RelativePositionalEncoding(self.relative_attention_num_buckets, self.relative_attention_max_distance, self.n_heads, self.max_sequence_length, config.use_randomized_position_encoding)
+            self.pe_encoding = RelativePositionalEncoding(self.relative_attention_num_buckets,
+                                                          self.relative_attention_max_distance,
+                                                          self.n_heads,
+                                                          self.max_sequence_length,
+                                                          bidirectional=(not self.is_decoder),
+                                                          randomized_position=config.use_randomized_position_encoding)
         elif self.position_encoding_type == "RoPE":
-            self.pe_encoding = RotaryPositionalEncoding(int(self.key_value_proj_dim * config.rotary_emb_fraction), self.max_sequence_length, config.rotary_base, config.rotary_interleaved, config.rotary_scale_base, config.use_randomized_position_encoding)
+            self.pe_encoding = RotaryPositionalEncoding(int(self.key_value_proj_dim * config.rotary_emb_fraction),
+                                                        self.max_sequence_length,
+                                                        config.rotary_base,
+                                                        config.rotary_interleaved,
+                                                        config.rotary_scale_base,
+                                                        randomized_position=config.use_randomized_position_encoding)
         elif self.position_encoding_type == "FIRE" and has_positional_encoding:
-            self.pe_encoding = FIRE(num_heads=self.n_heads, mlp_width=config.fire_mlp_width, init_c=0.1, init_L=self.relative_attention_max_distance)
+            self.pe_encoding = FIRE(num_heads=self.n_heads,
+                                    mlp_width=config.fire_mlp_width,
+                                    init_c=0.1,
+                                    init_L=self.relative_attention_max_distance)
 
         self.Wq = nn.Linear(self.d_model, self.inner_dim, bias=False)
         self.Wk = nn.Linear(self.d_model, self.inner_dim, bias=False)
@@ -248,8 +268,16 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         if position_bias is None and self.pe_encoding is not None:
             q, k, v, position_bias = self.pe_encoding(q, k, v)
 
-        if position_bias is not None and self.use_full_bias_size and (self.attention_type == "fa2" or self.attention_type == "triton"):
-            position_bias = position_bias.expand(q.shape[0], q.shape[2], q.shape[1], k.shape[1]).contiguous()
+        if position_bias is not None and self.use_full_bias_size:
+            position_bias = position_bias.expand(q.shape[0], q.shape[2], q.shape[1], k.shape[1])
+            if self.attention_type == "fa2" or self.attention_type == "triton":
+                position_bias = position_bias.contiguous()
+
+        if position_bias is not None and mask is not None and self.use_masking:
+            mask = mask.unsqueeze(1)
+            if len(mask.shape) == 3:
+                mask = mask.unsqueeze(3)
+            position_bias = torch.where(mask == True, position_bias, torch.finfo(hidden_states.dtype).min)
 
         if self.attention_type == "fa2":
             output = flash_attn_func(q, k, v, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
