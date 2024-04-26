@@ -93,6 +93,12 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
         # Sample a list of denoiser
         denoisers_sample = np.random.choice(range(len(self.denoiser_list)), input_batch_size, p=self.denoiser_proportions)
 
+        # if length is not present in dict add it
+        has_length = "length" in examples[0]
+        if not has_length:
+            for i in range(len(examples)):
+                examples[i]["length"] = examples[i]["input_ids"].shape[1]
+
         # truncate lengths
         truncated_examples = []
         for i, x in enumerate(examples):
