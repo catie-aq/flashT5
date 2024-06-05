@@ -204,7 +204,7 @@ def flash_attn_v2_bwd_abstract(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_
 
     return dq, dk, dv, ds
 
-class FlashAttention(torch.autograd.Function):
+class FlashAttentionAdditiveBias(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, bias, causal, sm_scale):
         Dq, Dk, Dv = q.shape[-1], k.shape[-1], v.shape[-1]
@@ -250,7 +250,7 @@ class FlashAttention(torch.autograd.Function):
         return dq, dk, dv, ds, None, None, None, None
 
 
-def attention(q, k, v, bias, causal=False, sm_scale=None):
+def flash_attention_v2_bias(q, k, v, bias, causal=False, sm_scale=None):
     """
     An implementation of FlashAttention v2(https://arxiv.org/abs/2307.08691).
 
@@ -264,7 +264,7 @@ def attention(q, k, v, bias, causal=False, sm_scale=None):
     Returns:
         out(torch.Tensor): The output. The shape is (batch_size, nheads, seqlen_q, headdim).
     """
-    return FlashAttention.apply(q, k, v, bias, causal, sm_scale)
+    return FlashAttentionAdditiveBias.apply(q, k, v, bias, causal, sm_scale)
 
 
 # --------------------------- Forward ---------------------------
@@ -582,12 +582,6 @@ def _bwd_kv_kernel(
 
     # offset pointer for ds tensor and locks for the reduction
     if RETURN_DS:
-        if IS_BATCH_REDUCED:
-            lock_id = (off_z % GROUP_SIZE_BIAS)
-            lock += lock_id
-            count = lock + GROUP_SIZE_BIAS
-            DS += lock_id * stride_bz + off_h * stride_bh
-        else:
             DS += off_z * stride_bz + off_h * stride_bh
 
     # offset pointers for batch/head
@@ -708,29 +702,6 @@ def _bwd_kv_kernel(
 
         # store ds
         if RETURN_DS:
-            if IS_BATCH_REDUCED and (Z != GROUP_SIZE_BIAS):
-                # wait for the lock
-                while tl.atomic_cas(lock, 0, 1) == 1:
-                    pass
-
-                counter = tl.load(count)
-                # First store doesn't accumulate
-                if counter == 0:
-                    tl.atomic_xchg(count, 1)
-                else:
-                    if DIVISIBLE_M and DIVISIBLE_N:
-                        ds += tl.load(ds_ptrs)
-                    else:
-                        ds += tl.load(ds_ptrs, mask=mask_m[:, None] & mask_n[None, :])
-
-                if DIVISIBLE_M and DIVISIBLE_N:
-                    tl.store(ds_ptrs, ds)
-                else:
-                    tl.store(ds_ptrs, ds, mask=mask_m[:, None] & mask_n[None, :])
-
-                # Release the lock
-                tl.atomic_xchg(lock, 0)
-            else:
                 if DIVISIBLE_M and DIVISIBLE_N:
                     tl.store(ds_ptrs, ds)
                 else:
