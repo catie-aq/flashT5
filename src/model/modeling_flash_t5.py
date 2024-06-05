@@ -24,9 +24,9 @@ except ImportError:
     fast_cross_entropy_loss = None
 
 try:
-    from .ops.flash_attention_v2_bias import attention as flash_attention_triton
+    from .ops.flash_attention_v2_bias import flash_attention_v2_bias
 except ImportError:
-    fast_cross_entropy_loss = None
+    flash_attention_v2_bias = None
 
 try:
     from .ops.gated_mlp import gated_mlp
@@ -200,7 +200,7 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         if self.use_masking and not self.use_full_bias_size:
             raise ValueError("Masking can only be used with full batch size.")
 
-        if self.attention_type == "triton" and flash_attention_triton is None:
+        if self.attention_type == "triton" and flash_attention_v2_bias is None:
             raise ImportError("flash_attention_triton is not available")
         elif self.attention_type == "fa2" and flash_attn_func is None:
             raise ImportError("Flash Attention 2 is not available")
@@ -285,7 +285,7 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
             q = q.permute(0, 2, 1, 3)
             k = k.permute(0, 2, 1, 3)
             v = v.permute(0, 2, 1, 3)
-            output = flash_attention_triton(q, k, v, position_bias, self.is_causal, self.softmax_scale)
+            output = flash_attention_v2_bias(q, k, v, position_bias, self.is_causal, self.softmax_scale)
             output = output.permute(0, 2, 1, 3)
         else: # use flash attention
             q = q.permute(0, 2, 1, 3)
