@@ -2,8 +2,10 @@ import math
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
-
-from flash_attn.layers.rotary import apply_rotary_emb_qkv_, apply_rotary_emb_func, apply_rotary_emb_kv_
+try:
+    from flash_attn.layers.rotary import apply_rotary_emb_qkv_, apply_rotary_emb_func, apply_rotary_emb_kv_
+except:
+    apply_rotary_emb_qkv_, apply_rotary_emb_func, apply_rotary_emb_kv_ = None, None, None
 
 class RelativePositionalEncoding(nn.Module):
 
