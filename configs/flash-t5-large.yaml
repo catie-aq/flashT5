@@ -5,7 +5,6 @@ train_dataset: /mnt/data2/culturax_tokenized_nopad_flash-t5/train
 valid_dataset: /mnt/data2/culturax_tokenized_nopad_flash-t5/valid
 checkpoint_name: false
 model_args:
-  alibi_mode: symetric
   attention_dropout_rate: 0.0
   dropout_rate: 0.0
   auto_map:
@@ -23,8 +22,8 @@ model_args:
   relative_attention_max_distance: 128
   relative_attention_num_buckets: 32
   tie_word_embeddings: false
-  use_flash_attention: "fa2"
-  use_triton_layernorm: true
+  attention_type: triton
+  use_triton_layernorm: false
   use_triton_crossentropy: true
   use_triton_gated_mlp: false
   use_glu_mlp: true
@@ -50,8 +49,8 @@ training_args:
   gradient_checkpointing: false
   group_by_length: false
   include_tokens_per_second: true
-  learning_rate: 0.02
-  logging_steps: 50
+  learning_rate: 5.0e-3
+  logging_steps: 100
   logging_strategy: steps
   lr_scheduler_type: linear
   max_grad_norm: 1.0
@@ -68,11 +67,11 @@ training_args:
   save_steps: 2000
   save_strategy: steps
   seed: 42
-  torch_compile: false
+  torch_compile: true
   warmup_ratio: 0.0
   warmup_steps: 10000
   weight_decay: 0.0
 collator_args:
   max_token_length: 512
   max_labels_length: 512
-  output_batch_size: 24
+  output_batch_size: 64
