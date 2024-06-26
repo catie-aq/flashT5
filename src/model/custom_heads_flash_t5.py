@@ -227,11 +227,19 @@ class FlashT5ForQuestionAnswering(FlashT5PreTrainedModel):
 
     def __init__(self, config: FlashT5Config):
         super().__init__(config)
-        self.transformer = FlashT5EncoderModel(config)
+        self.shared = nn.Embedding(config.vocab_size, config.d_model)
+
+        encoder_config = copy.deepcopy(config)
+        encoder_config.is_decoder = False
+        encoder_config.is_encoder_decoder = False
+        self.encoder = FlashT5Stack(encoder_config, self.shared)
         self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels)
 
         # Initialize weights and apply final processing
         self.post_init()
+
+        self.qa_outputs.weight.data.normal_(mean=0.0, std=config.initializer_factor * 1.0)
+        self.qa_outputs.bias.data.zero_()
 
         self.model_parallel = False
 
@@ -265,15 +273,11 @@ class FlashT5ForQuestionAnswering(FlashT5PreTrainedModel):
         >>> end_logits = outputs.end_logits
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        
-        outputs = self.transformer(
+
+        outputs = self.encoder(
             input_ids,
             attention_mask=attention_mask,
-            head_mask=head_mask,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
         )
         sequence_output = outputs[0]
 
