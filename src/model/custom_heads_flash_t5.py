@@ -12,7 +12,7 @@ from transformers.modeling_outputs import (
     SequenceClassifierOutput
 )
 
-from .modeling_flash_t5 import FlashT5PreTrainedModel, FlashT5Stack, FlashT5Model, FlashT5EncoderModel
+from .modeling_flash_t5 import FlashT5PreTrainedModel, FlashT5Stack, FlashT5Model
 from .configuration_flash_t5 import FlashT5Config
 
 
