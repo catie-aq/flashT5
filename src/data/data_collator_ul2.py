@@ -1,6 +1,5 @@
 from typing import Dict, List
 import numpy as np
-from dataclasses import dataclass
 from transformers import BatchEncoding
 from transformers.data.data_collator import DataCollatorMixin
 from transformers import AutoTokenizer
@@ -43,46 +42,43 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
     def is_special_token(self, x):
         return (x <= self.extra_ids[0]) & (x >= self.extra_ids[-1])
 
-    def _greedy_packing(self, input_ids, labels):
+    def _best_fit(self, input_ids, labels):
+        # Possible to sort input_ids and labels by descending length - but too slow for not much packing gain
 
-        # Generate batch by greedy concatenate small length (to avoid large padding)
         batch_inputs = []
         batch_labels = []
-        included_elements = [False for _ in range(len(input_ids))]
 
-        for i in range(self.batch_size):
-            concatenated_inputs = None
-            concatenated_labels = None
+        for _ in range(self.batch_size):
+            bin_inputs = []
+            bin_labels = []
+            bin_input_length = 0
+            bin_label_length = 0
+            bin_special_tokens = 0
 
-            for i, x in enumerate(input_ids):
-                if included_elements[i] == False:
-                    item_labels = labels[i]
-                    size_inputs = x.shape[1]
-                    size_labels = item_labels.shape[1]
+            for i, (x, item_labels) in enumerate(zip(input_ids, labels)):
+                if x is None:
+                    continue
 
-                    if concatenated_inputs is None:
-                        concatenated_inputs = x
-                        concatenated_labels = item_labels
-                        included_elements[i] = True
-                    elif ((concatenated_inputs.shape[1] + size_inputs < self.max_length)
-                          and (concatenated_labels.shape[1] + size_labels < self.max_labels_length)):
+                size_inputs = x.shape[1]
+                size_labels = item_labels.shape[1]
+                num_new_special_tokens = self.is_special_token(x).sum()
 
-                        # if we have too much labels used already, pass
-                        num_labels = self.is_special_token(concatenated_inputs).sum()
-                        num_new_labels = self.is_special_token(x).sum()
-                        if (num_labels + num_new_labels) >= len(self.extra_ids):
-                            continue
+                if (bin_input_length + size_inputs < self.max_length and
+                    bin_label_length + size_labels < self.max_labels_length and
+                    bin_special_tokens + num_new_special_tokens < len(self.extra_ids)):
 
-                        concatenated_inputs = np.concatenate([concatenated_inputs, x], axis=1)
-                        concatenated_labels = np.concatenate([concatenated_labels, item_labels], axis=1)
-                        included_elements[i] = True
+                    bin_inputs.append(x)
+                    bin_labels.append(item_labels)
+                    bin_input_length += size_inputs
+                    bin_label_length += size_labels
+                    bin_special_tokens += num_new_special_tokens
 
-            batch_inputs.append(concatenated_inputs)
-            batch_labels.append(concatenated_labels)
+                    input_ids[i] = None
+                    labels[i] = None
 
-            # reset the list in the unlikely event that the list has been completly filled
-            if sum(included_elements) == len(included_elements):
-                included_elements = [False for _ in range(len(input_ids))]
+            if bin_inputs:
+                batch_inputs.append(np.concatenate(bin_inputs, axis=1))
+                batch_labels.append(np.concatenate(bin_labels, axis=1))
 
         return batch_inputs, batch_labels
 
@@ -126,7 +122,7 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
         if len(input_ids) == self.batch_size:
             batch_inputs, batch_labels = input_ids, labels
         else:
-            batch_inputs, batch_labels = self._greedy_packing(input_ids, labels)
+            batch_inputs, batch_labels = self._best_fit(input_ids, labels)
 
         labels = [np.where(self.is_special_token(x), self.extra_ids[0] - np.cumsum(self.is_special_token(x)) + 1, x) for x in batch_labels]
         input_ids = [np.where(self.is_special_token(x), self.extra_ids[0] - np.cumsum(self.is_special_token(x)) + 1, x) for x in batch_inputs]
@@ -145,7 +141,8 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
 
         batch = {}
         causal_labels = None
-        if self.causal == False:
+
+        if not self.causal:
             batch["input_ids"] = torch.from_numpy(input_ids)
             causal_labels = torch.from_numpy(labels)
         else:
