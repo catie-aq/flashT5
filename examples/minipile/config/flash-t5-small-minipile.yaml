@@ -1,0 +1,74 @@
+model_name: flash-t5-small-minipile
+version : 1
+tokenizer_name: tokenizer-flasht5-minipile
+train_dataset: /mnt/data1/Datasets/NLP/tokenized/minipile_tokenized_flasht5/train
+valid_dataset: /mnt/data1/Datasets/NLP/tokenized/minipile_tokenized_flasht5/valid
+checkpoint_name: true
+model_args:
+  attention_dropout_rate: 0.0
+  dropout_rate: 0.0
+  auto_map:
+    AutoModel: modeling_flash_t5.FlashT5ForConditionalGeneration
+  d_ff: 1024
+  d_kv: 64
+  d_model: 512
+  decoder_start_token_id: 0
+  label_smoothing: 0.0
+  max_sequence_length: 1024
+  model_type: flash_t5
+  num_heads: 8
+  num_layers: 12
+  position_encoding_type: t5
+  tie_word_embeddings: false
+  attention_type: triton
+  use_glu_mlp: true
+  use_randomized_position_encoding: false
+  z_loss: 0.0001
+  use_triton_layernorm: true
+  use_triton_crossentropy: true
+  use_triton_gated_mlp: false
+  use_gelu_act: true
+  use_full_bias_size: false
+training_args:
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-06
+  bf16: true
+  bf16_full_eval: true
+  dataloader_drop_last: true
+  dataloader_num_workers: 8
+  dataloader_pin_memory: true
+  ddp_find_unused_parameters: false
+  do_eval: true
+  eval_accumulation_steps: 1
+  eval_steps: 500
+  evaluation_strategy: steps
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: false
+  group_by_length: false
+  include_tokens_per_second: true
+  learning_rate: 5.0e-3
+  logging_steps: 100
+  logging_strategy: steps
+  lr_scheduler_type: linear
+  max_grad_norm: 1.0
+  max_steps: 60000
+  metric_for_best_model: eval_loss
+  optim: adamw_torch
+  overwrite_output_dir: true
+  per_device_eval_batch_size: 128
+  per_device_train_batch_size: 512
+  remove_unused_columns: false
+  resume_from_checkpoint: null
+  save_safetensors: false
+  save_steps: 1000
+  save_strategy: steps
+  seed: 42
+  torch_compile: false
+  warmup_ratio: 0.0
+  warmup_steps: 10000
+  weight_decay: 0.0
+collator_args:
+  max_token_length: 256
+  max_labels_length: 256
+  output_batch_size: 256
