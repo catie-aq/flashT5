@@ -1,33 +1,38 @@
-model_name: flash-t5-large
-version: 2
-tokenizer_name: flash-t5-fr-tokenizer
+model_name: fat5-flan-large
+version : 2
+tokenizer_name: google/flan-t5-large
 train_dataset: /mnt/data2/culturax_tokenized_nopad_flash-t5/train
 valid_dataset: /mnt/data2/culturax_tokenized_nopad_flash-t5/valid
 checkpoint_name: false
 model_args:
-  alibi_mode: symetric
   attention_dropout_rate: 0.0
   dropout_rate: 0.0
   auto_map:
     AutoModel: modeling_flash_t5.FlashT5ForConditionalGeneration
-  d_ff: 4096
+  d_ff: 2816
   d_kv: 64
   d_model: 1024
   decoder_start_token_id: 0
   label_smoothing: 0.1
-  layer_norm_type: standard
-  max_sequence_length: 2048
+  max_sequence_length: 1024
   model_type: flash_t5
   num_heads: 16
   num_layers: 24
   position_encoding_type: t5
-  relative_attention_max_distance: 256
-  relative_attention_num_buckets: 64
+  relative_attention_max_distance: 128
+  relative_attention_num_buckets: 32
   tie_word_embeddings: false
-  use_flash_attention: false
+  use_flash_attention: triton
   use_glu_mlp: true
-  use_randomized_position_encoding: true
+  use_randomized_position_encoding: false
   z_loss: 0.0001
+  use_triton_layernorm: false
+  use_triton_crossentropy: false
+  use_triton_gated_mlp: false
+  use_gelu_act: true
+  use_full_bias_size: false
+  use_masking: false
+  attention_scale: 1.0
 training_args:
   adafactor: false
   adam_beta1: 0.9
@@ -40,36 +45,36 @@ training_args:
   dataloader_pin_memory: true
   ddp_find_unused_parameters: false
   do_eval: true
-  eval_accumulation_steps: 4
+  eval_accumulation_steps: 5
   eval_steps: 500
   evaluation_strategy: steps
-  gradient_accumulation_steps: 16
+  gradient_accumulation_steps: 8
   gradient_checkpointing: false
   group_by_length: false
   include_tokens_per_second: true
-  learning_rate: 0.02
-  logging_steps: 50
+  learning_rate: 1.0e-5
+  logging_steps: 1
   logging_strategy: steps
   lr_scheduler_type: linear
-  max_grad_norm: 0.8
-  max_steps: 200000
+  max_grad_norm: 1.0
+  max_steps: 100
   metric_for_best_model: eval_loss
   num_train_epochs: 3.0
   optim: adamw_torch
   overwrite_output_dir: true
-  per_device_eval_batch_size: 24
-  per_device_train_batch_size: 164
+  per_device_eval_batch_size: 16
+  per_device_train_batch_size: 16
   remove_unused_columns: false
   resume_from_checkpoint: null
   save_safetensors: true
-  save_steps: 5000
+  save_steps: 100
   save_strategy: steps
   seed: 42
-  torch_compile: true
+  torch_compile: false
   warmup_ratio: 0.0
-  warmup_steps: 10000
+  warmup_steps: 20
   weight_decay: 0.0
 collator_args:
   max_token_length: 512
   max_labels_length: 512
-  output_batch_size: 32
+  output_batch_size: 64
