@@ -24,12 +24,16 @@ class AdamWScale(Optimizer):
             Adam's betas parameters (b1, b2).
         eps (`float`, *optional*, defaults to 1e-6):
             Adam's epsilon for numerical stability.
-        weight_decay (`float`, *optional*, defaults to 0):
+        weight_decay (`float`, *optional*, defaults to 0.0):
             Decoupled weight decay to apply.
-        correct_bias (`bool`, *optional*, defaults to `True`):
-            Whether or not to correct bias in Adam (for instance, in Bert TF repository they use `False`).
-        no_deprecation_warning (`bool`, *optional*, defaults to `False`):
-            A flag used to disable the deprecation warning (set to `True` to disable the warning).
+        kahan_sum (`bool`, *optional*, defaults to False):
+            Whether to use Kahan summation for updating parameters.
+        foreach (`bool`, *optional*, defaults to False):
+            Whether to use the foreach implementation.
+        correct_bias (`bool`, *optional*, defaults to True):
+            Whether to correct bias in Adam.
+        use_state_dtype (`torch.dtype`, *optional*, defaults to None):
+            The dtype to use for optimizer state. If None, use the default dtype.
     """
 
     def __init__(
@@ -41,7 +45,7 @@ class AdamWScale(Optimizer):
         weight_decay: float = 0.0,
         kahan_sum: bool = False,
         foreach: bool = False,
-        correct_bias: bool = True,
+        correct_bias: bool = True
     ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr} - should be >= 0.0")
@@ -236,10 +240,16 @@ class AdamWScale(Optimizer):
             # Adapt step size using RMS of parameters
             rms_p = torch._foreach_norm(dev_params)
             numel = [torch.tensor(math.sqrt(p.numel())) for p in dev_params]
-            rms_p = torch._foreach_div(rms_p, numel)
+            torch._foreach_div_(rms_p, numel)
+            torch._foreach_maximum_(rms_p, 1e-3)
 
-            torch._foreach_mul_(step_size, torch._foreach_maximum(rms_p, 1e-3))
+            torch._foreach_mul_(step_size, rms_p)
             torch._foreach_div_(dev_grads, step_size)
+
+            # explicitly delete tensors when not used
+            del rms_p
+            del numel
+            del step_size
 
             # Update parameters
             if do_kahan_sum:
