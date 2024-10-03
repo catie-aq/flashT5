@@ -34,8 +34,7 @@ except ImportError:
     gated_mlp = None
 
 try:
-    #from flash_attn import flash_attn_kvpacked_func, flash_attn_func
-    from ..utils.fa2_lib.fa2_compilable import flash_attn_kvpacked_func, flash_attn_func
+    from flash_attn import flash_attn_kvpacked_func, flash_attn_func
 except ImportError:
     flash_attn_kvpacked_func, flash_attn_func = None, None
 
@@ -277,7 +276,7 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
             mask = mask.unsqueeze(1)
             if len(mask.shape) == 3:
                 mask = mask.unsqueeze(3)
-            position_bias = torch.where(mask == True, position_bias, torch.finfo(hidden_states.dtype).min)
+            position_bias = torch.where(mask, position_bias, torch.finfo(hidden_states.dtype).min)
 
         if self.attention_type == "fa2":
             output = flash_attn_func(q, k, v, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
