@@ -41,4 +41,4 @@ def test_flash_attention(batch_size: int, num_heads: int, head_dim: int, sequenc
 
     return {"SPDA": fn_spda, "Triton": fn_triton, "Flash Attention RPE": fn_flash_attn_rpe, "Flash Attention": fn_flash_attn}
 
-print(test_flash_attention._benchmark.run(mode="fwd_bwd", memory=True, flops=flops, export_graphics=True, key_split="sequence_length"))
+print(test_flash_attention._benchmark.run(mode="fwd_bwd", memory=True, flops=flops, export_graphics=True, key_split="sequence_length", path_graphics="bench_fa2_bias"))

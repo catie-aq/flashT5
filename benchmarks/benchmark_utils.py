@@ -255,7 +255,6 @@ def pytorch_profiler(
     if trace_filename is not None:
         prof.export_chrome_trace(trace_filename)
 
-
 def benchmark_memory(fn, *inputs, desc="", verbose=True, **kwinputs):
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
