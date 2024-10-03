@@ -1,6 +1,6 @@
 import torch
 import pytest
-from src.model.ops.flash_attention_v2_bias import attention
+from src.model.ops.flash_attention_v2_bias import flash_attention_v2_bias
 from src.utils.attn_ref import attn_ref
 
 def max_diff(a, b):
@@ -21,7 +21,7 @@ def test_attention_fwd(B, H, M, N, D, causal, dtype, scale):
 
     o_ref = attn_ref(q, k, v, b, causal=causal, sm_scale=scale, upcast=True)
     o_torch = attn_ref(q, k, v, b, causal=causal, sm_scale=scale, upcast=False)
-    o_hyp = attention(q, k, v, b, causal, scale)
+    o_hyp = flash_attention_v2_bias(q, k, v, b, causal, scale)
 
     torch_max_diff = max_diff(o_torch, o_ref)
     triton_max_diff = max_diff(o_hyp, o_ref)
@@ -44,7 +44,7 @@ def test_attention_bwd(B, H, M, N, D, causal, dtype, scale):
 
     o_ref = attn_ref(q, k, v, bias, causal=causal, sm_scale=scale, upcast=True)
     o_torch = attn_ref(q, k, v, bias, causal=causal, sm_scale=scale, upcast=False)
-    o_hyp = attention(q, k, v, bias, causal=causal, sm_scale=scale)
+    o_hyp = flash_attention_v2_bias(q, k, v, bias, causal=causal, sm_scale=scale)
 
     gq_ref, gk_ref, gv_ref, gb_ref = torch.autograd.grad(o_ref, (q, k, v, bias), do)
     gq_torch, gk_torch, gv_torch, gb_torch = torch.autograd.grad(o_torch, (q, k, v, bias), do)
