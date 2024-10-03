@@ -201,8 +201,11 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
 
         if self.attention_type == "triton" and flash_attention_v2_bias is None:
             raise ImportError("flash_attention_triton is not available")
-        elif self.attention_type == "fa2" and flash_attn_func is None:
+        elif self.attention_type.startswith("fa2") and flash_attn_func is None:
             raise ImportError("Flash Attention 2 is not available")
+
+        if self.attention_type == "fa2_rpe" and self.position_encoding_type != "t5":
+             raise ValueError("fa2_rpe is not compatible with non-T5 position encoding")
 
         assert (self.p_dropout == 0.0) or (self.attention_type != "triton"), "Triton attention does not support dropout"
 
@@ -264,12 +267,12 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
         k = k.view(batch_size, key_length, self.n_heads, self.key_value_proj_dim)
         v = v.view(batch_size, key_length, self.n_heads, self.key_value_proj_dim)
 
-        if position_bias is None and self.pe_encoding is not None:
+        if position_bias is None and self.pe_encoding is not None and self.attention_type != "fa2_rpe":
             q, k, v, position_bias = self.pe_encoding(q, k, v)
 
         if position_bias is not None and self.use_full_bias_size:
             position_bias = position_bias.expand(q.shape[0], q.shape[2], q.shape[1], k.shape[1])
-            if self.attention_type == "fa2" or self.attention_type == "triton":
+            if self.attention_type == "fa2_bias" or self.attention_type == "triton":
                 position_bias = position_bias.contiguous()
 
         if position_bias is not None and mask is not None and self.use_masking:
@@ -278,8 +281,14 @@ class FlashT5Attention(nn.Module, ModuleUtilsMixin):
                 mask = mask.unsqueeze(3)
             position_bias = torch.where(mask, position_bias, torch.finfo(hidden_states.dtype).min)
 
-        if self.attention_type == "fa2":
-            output = flash_attn_func(q, k, v, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, attn_bias=position_bias, causal=self.is_causal)
+        if self.attention_type == "fa2_bias":
+            output = flash_attn_func(q, k, v, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, \
+                                    attn_bias=position_bias, causal=self.is_causal)
+        elif self.attention_type == "fa2_rpe":
+            output = flash_attn_func(q, k, v, dropout_p=self.p_dropout, softmax_scale=self.softmax_scale, \
+                                    rpe_weights=self.pe_encoding.relative_attention_bias.weight.t(), \
+                                    rpe_max_distance=self.relative_attention_max_distance, \
+                                    causal=self.is_causal)
         elif self.attention_type == "triton":
             q = q.permute(0, 2, 1, 3)
             k = k.permute(0, 2, 1, 3)
