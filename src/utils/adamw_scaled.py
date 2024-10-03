@@ -101,6 +101,7 @@ class AdamWScale(Optimizer):
                         state["kahan_comp"] = torch.zeros_like(p, memory_format=torch.preserve_format)
                     else:
                         state["kahan_comp"] = None
+                        group["kahan_sum"] = False
 
                 exp_avgs.append(state['exp_avg'])
                 exp_avg_sqs.append(state['exp_avg_sq'])
