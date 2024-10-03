@@ -179,7 +179,7 @@ def cross_entropy_triton_fwd(logits, labels, n_cols, n_rows, BLOCK_SIZE, num_war
     return losses, logsumexp
 
 
-@torch.library.impl_abstract("flasht5::cross_entropy_triton_fwd", cross_entropy_triton_fwd)
+@torch.library.register_fake("flasht5::cross_entropy_triton_fwd", cross_entropy_triton_fwd)
 def cross_entropy_triton_fwd_abstract(logits, labels, n_cols, n_rows, BLOCK_SIZE, num_warps):
     losses    = torch.empty(n_rows, dtype=torch.float32, device=logits.device)
     logsumexp = torch.empty(n_rows, dtype=torch.float32, device=logits.device)
@@ -210,7 +210,7 @@ def cross_entropy_triton_bwd(dlosses, dlogsumexp, logits, logsumexp, labels, z_l
     return dinputs
 
 
-@torch.library.impl_abstract("flasht5::cross_entropy_triton_bwd", cross_entropy_triton_bwd)
+@torch.library.register_fake("flasht5::cross_entropy_triton_bwd", cross_entropy_triton_bwd)
 def cross_entropy_triton_bwd_abstract(dlosses, dlogsumexp, logits, logsumexp, labels, z_loss_factor, n_cols, n_rows, BLOCK_SIZE, num_warps):
     return torch.empty_like(logits)
 

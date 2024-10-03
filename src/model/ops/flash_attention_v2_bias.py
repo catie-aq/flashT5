@@ -71,7 +71,7 @@ def flash_attn_v2_fwd(q, k, v, bias, causal, sm_scale, BLOCK_M, BLOCK_N, num_war
     return o, L
 
 
-@torch.library.impl_abstract("flasht5::flash_attn_v2_fwd", flash_attn_v2_fwd)
+@torch.library.register_fake("flasht5::flash_attn_v2_fwd", flash_attn_v2_fwd)
 def flash_attn_v2_fwd_abstract(q, k, v, bias, causal, sm_scale, BLOCK_M, BLOCK_N, num_warps, num_stages):
     B, H, M, D = q.shape
     o = torch.empty_like(q)
@@ -195,7 +195,7 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
 
     return dq, dk, dv, ds
 
-@torch.library.impl_abstract("flasht5::flash_attn_v2_bwd", flash_attn_v2_bwd)
+@torch.library.register_fake("flasht5::flash_attn_v2_bwd", flash_attn_v2_bwd)
 def flash_attn_v2_bwd_abstract(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_N, num_warps, num_stages):
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)

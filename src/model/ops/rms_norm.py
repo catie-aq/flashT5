@@ -22,7 +22,7 @@ import torch
 import math
 import torch.nn.functional as F
 
-from torch.cuda.amp import custom_fwd, custom_bwd
+from torch.amp import custom_fwd, custom_bwd
 
 @triton.jit
 def _rmsnorm_fwd_kernel(
@@ -175,7 +175,7 @@ def rmsnorm_triton_fwd(X, weight, eps):
     return Y, rstd
 
 
-@torch.library.impl_abstract("flasht5::rmsnorm_triton_fwd", rmsnorm_triton_fwd)
+@torch.library.register_fake("flasht5::rmsnorm_triton_fwd", rmsnorm_triton_fwd)
 def rmsnorm_triton_fwd_abstract(X, weight, eps):
     M, N = X.shape
 
@@ -239,7 +239,7 @@ def rmsnorm_triton_bwd(
     return dx, dw
 
 
-@torch.library.impl_abstract("flasht5::rmsnorm_triton_bwd", rmsnorm_triton_bwd)
+@torch.library.register_fake("flasht5::rmsnorm_triton_bwd", rmsnorm_triton_bwd)
 def rmsnorm_triton_bwd_abstract(dy, x, weight, rstd, eps):
 
     M, N = x.shape
@@ -252,7 +252,7 @@ def rmsnorm_triton_bwd_abstract(dy, x, weight, rstd, eps):
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    @custom_fwd
+    @custom_fwd(device_type="cuda")
     def forward(ctx, X, W, eps=1e-6):
 
         X_orig_shape = X.shape

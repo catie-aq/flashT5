@@ -3,7 +3,7 @@ import math
 import triton
 import triton.language as tl
 
-from torch.cuda.amp import custom_bwd, custom_fwd
+from torch.amp import custom_bwd, custom_fwd
 
 def to_tl_dtype(input):
     if input == torch.float32:
@@ -565,7 +565,7 @@ def gated_matmul_bwd_weights(
 
 class GatedMLP(torch.autograd.Function):
     @staticmethod
-    @custom_fwd
+    @custom_fwd(device_type="cuda")
     def forward(ctx, x, w1, w2, use_gelu=True):
 
         BLOCK_M = 128
@@ -628,7 +628,7 @@ class GatedMLP(torch.autograd.Function):
         return out
 
     @staticmethod
-    @custom_bwd
+    @custom_bwd(device_type="cuda")
     def backward(ctx, dout):
         BLOCK_M = 64
         BLOCK_N = 64
