@@ -6,6 +6,6 @@ numpy>=1.26.4
 safetensors>=0.4.2
 tqdm>=4.66.2
 transformers>=4.38.0
-triton>=2.1.0
+triton>=3.0.0
 torch>=2.4.0
 datasets>=2.16.0
