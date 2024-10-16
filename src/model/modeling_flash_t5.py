@@ -6,7 +6,6 @@ from typing import Optional, Tuple, Union
 
 import torch
 from torch import nn
-from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
 
 from transformers.modeling_utils import ModuleUtilsMixin
@@ -19,7 +18,7 @@ except ImportError:
     fast_rms_layernorm = None
 
 try:
-    from .ops.cross_entropy_loss import fast_cross_entropy_loss
+    from .ops.cross_entropy_loss import cross_entropy_loss as fast_cross_entropy_loss
 except ImportError:
     fast_cross_entropy_loss = None
 
@@ -48,6 +47,7 @@ class FlashT5CrossEntropyLoss(nn.Module):
 
         self.use_triton_crossentropy = use_triton_crossentropy
         self.z_loss_factor = z_loss_factor
+        self.label_smoothing = label_smoothing
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
@@ -60,7 +60,7 @@ class FlashT5CrossEntropyLoss(nn.Module):
     def forward(self, logits, labels):
 
         if self.use_triton_crossentropy:
-            return fast_cross_entropy_loss(logits, labels, z_loss_factor=self.z_loss_factor)
+            return fast_cross_entropy_loss(logits, labels,lse_square_scale=self.z_loss_factor, label_smoothing=self.label_smoothing)[0].mean()
 
         # use standard method
         batch, seq_len, d = logits.shape
@@ -71,7 +71,7 @@ class FlashT5CrossEntropyLoss(nn.Module):
         if self.z_loss_factor != 0.0:
             z_loss = self.compute_zloss(logits_flatten[labels_flatten != -100],
                                    z_loss=self.z_loss_factor)
-        return loss, z_loss
+        return loss + z_loss
 
 class FlashT5LayerNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6, use_triton_layernorm=False):
@@ -727,8 +727,7 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
 
         loss = None
         if labels is not None:
-            loss, z_loss = self.loss_fct(lm_logits, labels)
-            loss += z_loss
+            loss = self.loss_fct(lm_logits, labels)
 
         return Seq2SeqLMOutput(
             loss=loss,
