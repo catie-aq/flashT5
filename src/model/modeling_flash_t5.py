@@ -29,11 +29,6 @@ except ImportError:
     flash_attention_v2_bias = None
 
 try:
-    from .ops.gated_mlp import gated_mlp
-except ImportError:
-    gated_mlp = None
-
-try:
     from flash_attn import flash_attn_kvpacked_func, flash_attn_func
 except ImportError:
     flash_attn_kvpacked_func, flash_attn_func = None, None
@@ -139,15 +134,9 @@ class FlashT5DenseGatedAct(nn.Module):
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = torch.nn.GELU(approximate='tanh') if config.use_gelu_act else torch.nn.ReLU()
 
-        self.use_triton_gated_mlp = config.use_triton_gated_mlp
-        if self.use_triton_gated_mlp and gated_mlp is None:
-            raise ImportError("gated_mlp is not available")
         self.use_gelu_act = config.use_gelu_act
 
     def forward(self, hidden_states):
-
-        if self.use_triton_gated_mlp:
-            return gated_mlp(hidden_states, self.wi_0.weight, self.wi_1.weight, self.use_gelu_act)
 
         hidden_act = self.act(self.wi_0(hidden_states))
         hidden_linear = self.wi_1(hidden_states)

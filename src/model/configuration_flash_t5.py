@@ -32,7 +32,6 @@ class FlashT5Config(T5Config):
         alibi_mode="symetric",
         use_triton_layernorm=False,
         use_triton_crossentropy=False,
-        use_triton_gated_mlp=False,
         use_gelu_act=True,
         use_full_bias_size=False,
         rotary_emb_fraction=1.0,
@@ -59,7 +58,6 @@ class FlashT5Config(T5Config):
         self.attention_dropout_rate = attention_dropout_rate
         self.use_triton_layernorm = use_triton_layernorm
         self.use_triton_crossentropy = use_triton_crossentropy
-        self.use_triton_gated_mlp = use_triton_gated_mlp
         self.use_gelu_act = use_gelu_act
         self.use_full_bias_size = use_full_bias_size
         self.rotary_base = rotary_base
