@@ -7,7 +7,7 @@ model_args:
   dropout_rate: 0.0
   auto_map:
     AutoModel: modeling_flash_t5.FlashT5ForConditionalGeneration
-  d_ff: 1024
+  d_ff: 2048
   d_kv: 64
   d_model: 512
   decoder_start_token_id: 0
@@ -50,7 +50,7 @@ training_args:
   gradient_checkpointing: false
   group_by_length: false
   include_tokens_per_second: true
-  learning_rate: 1.0e-5
+  learning_rate: 5.0e-3
   logging_steps: 100
   logging_strategy: steps
   lr_scheduler_type: linear
@@ -75,4 +75,4 @@ training_args:
 collator_args:
   max_token_length: 512
   max_labels_length: 512
-  output_batch_size: 256
+  output_batch_size: 128
