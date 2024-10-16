@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 
-from benchmark_utils import benchmark_forward, benchmark_backward, \
+from .benchmark_utils import benchmark_forward, benchmark_backward, \
                             benchmark_memory, benchmark_fwd_bwd, efficiency
 
 class Benchmark:
