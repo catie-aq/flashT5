@@ -1,6 +1,3 @@
-import torch
-import optimi
-
 from src.utils.adamw_scaled import AdamWScale
 
 from torch.optim.lr_scheduler import (
@@ -10,7 +7,7 @@ from torch.optim.lr_scheduler import (
     ConstantLR
 )
 
-def create_optimizer(model, lr, betas, eps, weight_decay, kahan_sum=False):
+def create_optimizer(model, lr, betas, eps, weight_decay, foreach=False, kahan_sum=False, use_state_dtype=None):
 
     no_decay = ["bias", "LayerNorm", "layernorm", "layer_norm", "ln"]
 
@@ -32,7 +29,8 @@ def create_optimizer(model, lr, betas, eps, weight_decay, kahan_sum=False):
         eps=eps,
         weight_decay=weight_decay,
         kahan_sum=kahan_sum,
-        foreach=True # Try to force foreach by default
+        foreach=foreach,
+        use_state_dtype=use_state_dtype
     )
 
     return optimizer

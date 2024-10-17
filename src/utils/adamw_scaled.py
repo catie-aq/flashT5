@@ -45,7 +45,8 @@ class AdamWScale(Optimizer):
         weight_decay: float = 0.0,
         kahan_sum: bool = False,
         foreach: bool = False,
-        correct_bias: bool = True
+        correct_bias: bool = True,
+        use_state_dtype: torch.dtype = None
     ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr} - should be >= 0.0")
@@ -56,7 +57,10 @@ class AdamWScale(Optimizer):
         if not 0.0 <= eps:
             raise ValueError(f"Invalid epsilon value: {eps} - should be >= 0.0")
 
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, foreach=foreach, kahan_sum=kahan_sum, correct_bias=correct_bias)
+        assert not (foreach and use_state_dtype is not None), "foreach is not supported with use_state_dtype"
+
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, foreach=foreach, \
+            kahan_sum=kahan_sum, correct_bias=correct_bias, use_state_dtype=use_state_dtype)
 
         super().__init__(params, defaults)
 
@@ -94,8 +98,13 @@ class AdamWScale(Optimizer):
                 # State initialization
                 if "kahan_comp" not in state:
                     state['step'] = torch.tensor(0, dtype=torch.int32, device=p.device)
-                    state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                    state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+
+                    if group["use_state_dtype"] in [torch.float16, torch.bfloat16]:
+                        state['exp_avg'] = torch.zeros_like(p, device=p.device, dtype=group["use_state_dtype"])
+                        state['exp_avg_sq'] = torch.zeros_like(p, device=p.device, dtype=group["use_state_dtype"])
+                    else:
+                        state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                        state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
                     if group["kahan_sum"] and p.dtype in [torch.float16, torch.bfloat16]:
                         state["kahan_comp"] = torch.zeros_like(p, memory_format=torch.preserve_format)
