@@ -22,11 +22,20 @@ import torch
 import triton
 import triton.language as tl
 
-# Wrapper for triton kernel for torch.compile - should be unecessary for PyTorch 2.3 ?
-torch.library.define("flasht5::flash_attn_v2_fwd", "(Tensor q, Tensor k, Tensor v, Tensor bias, bool causal, float sm_scale, int BLOCK_M, int BLOCK_N, int num_warps, int num_stages) -> (Tensor, Tensor)")
+from typing import Tuple
 
-@torch.library.impl("flasht5::flash_attn_v2_fwd", "default")
-def flash_attn_v2_fwd(q, k, v, bias, causal, sm_scale, BLOCK_M, BLOCK_N, num_warps, num_stages):
+@torch.library.custom_op("flasht5::flash_attn_v2_fwd", mutates_args=(), device_types="cuda")
+def flash_attn_v2_fwd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    bias: torch.Tensor,
+    causal: bool,
+    sm_scale: float,
+    BLOCK_M: int,
+    BLOCK_N: int,
+    num_warps: int, num_stages: int
+) -> Tuple[torch.Tensor, torch.Tensor]:
 
     B, H, M, D = q.shape
     N = k.shape[2]
@@ -71,7 +80,7 @@ def flash_attn_v2_fwd(q, k, v, bias, causal, sm_scale, BLOCK_M, BLOCK_N, num_war
     return o, L
 
 
-@torch.library.register_fake("flasht5::flash_attn_v2_fwd", flash_attn_v2_fwd)
+@torch.library.register_fake("flasht5::flash_attn_v2_fwd")
 def flash_attn_v2_fwd_abstract(q, k, v, bias, causal, sm_scale, BLOCK_M, BLOCK_N, num_warps, num_stages):
     B, H, M, D = q.shape
     o = torch.empty_like(q)
@@ -79,10 +88,22 @@ def flash_attn_v2_fwd_abstract(q, k, v, bias, causal, sm_scale, BLOCK_M, BLOCK_N
 
     return o, L
 
-torch.library.define("flasht5::flash_attn_v2_bwd", "(Tensor o, Tensor do, Tensor q, Tensor k, Tensor v, Tensor bias, Tensor L, bool causal, float sm_scale, int BLOCK_M, int BLOCK_N, int num_warps, int num_stages) -> (Tensor, Tensor, Tensor, Tensor)")
-
-@torch.library.impl("flasht5::flash_attn_v2_bwd", "default")
-def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_N, num_warps, num_stages):
+@torch.library.custom_op("flasht5::flash_attn_v2_bwd", mutates_args=(), device_types="cuda")
+def flash_attn_v2_bwd(
+    o: torch.Tensor,
+    do: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    bias: torch.Tensor,
+    L: torch.Tensor,
+    causal: bool,
+    sm_scale: float,
+    BLOCK_M: int,
+    BLOCK_N: int,
+    num_warps: int,
+    num_stages: int
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
     B, H, M, D = q.shape
     N = k.shape[2]
@@ -195,7 +216,7 @@ def flash_attn_v2_bwd(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_
 
     return dq, dk, dv, ds
 
-@torch.library.register_fake("flasht5::flash_attn_v2_bwd", flash_attn_v2_bwd)
+@torch.library.register_fake("flasht5::flash_attn_v2_bwd")
 def flash_attn_v2_bwd_abstract(o, do, q, k, v, bias, L, causal, sm_scale, BLOCK_M, BLOCK_N, num_warps, num_stages):
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)

@@ -16,7 +16,7 @@
 # Modification to the original version from Tri Dao:
 # - support for torch.compile
 
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional
 
 import torch
 import torch.nn.functional as F
@@ -59,7 +59,7 @@ def cross_entropy_fwd_kernel(
     PRECOMPUTED_LSE: tl.constexpr,  # If LSE is already computed (also no smoothing and logit_scale == 1.0)
 ):
     row_idx = tl.program_id(0)
-    logits_ptr = logits_ptr + row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr = logits_ptr + row_idx * logits_row_stride
     sum_logits = 0.0  # For smoothing
     if not PRECOMPUTED_LSE:
         # Statistics for online softmax
@@ -138,8 +138,8 @@ def cross_entropy_bwd_kernel(
 ):
     row_idx = tl.program_id(0)
     col_block_idx = tl.program_id(1)
-    logits_ptr = logits_ptr + row_idx * logits_row_stride.to(tl.int64)
-    dlogits_ptr = dlogits_ptr + row_idx * dlogits_row_stride.to(tl.int64)
+    logits_ptr = logits_ptr + row_idx * logits_row_stride
+    dlogits_ptr = dlogits_ptr + row_idx * dlogits_row_stride
     col_offsets = col_block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     label_idx = tl.load(labels_ptr + row_idx)
     if label_idx != ignore_index:
@@ -161,12 +161,24 @@ def cross_entropy_bwd_kernel(
         probs = tl.where(col_offsets == label_idx, probs - 1.0, probs)
     tl.store(dlogits_ptr + col_offsets, (dloss * logit_scale) * probs, mask=col_offsets < n_cols)
 
-
-# Wrapper for triton kernel for torch.compile - should be unecessary for PyTorch 2.3 ?
-torch.library.define("flasht5::cross_entropy_triton_fwd", "(Tensor logits, Tensor labels, Tensor precomputed_lse, bool use_precomputed_lse, bool split, float smoothing, float logit_scale, float lse_square_scale, int ignore_index, int total_classes, int class_start_idx, int n_cols, int n_rows, int BLOCK_SIZE, int num_warps) -> (Tensor, Tensor, Tensor)")
-
-@torch.library.impl("flasht5::cross_entropy_triton_fwd", "default")
-def cross_entropy_triton_fwd(logits, labels, precomputed_lse, use_precomputed_lse, split, smoothing, logit_scale, lse_square_scale, ignore_index, total_classes, class_start_idx, n_cols, n_rows, BLOCK_SIZE, num_warps):
+@torch.library.custom_op("flasht5::cross_entropy_triton_fwd", mutates_args=(), device_types="cuda")
+def cross_entropy_triton_fwd(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    precomputed_lse: torch.Tensor,
+    use_precomputed_lse: bool,
+    split: bool,
+    smoothing: float,
+    logit_scale: float,
+    lse_square_scale: float,
+    ignore_index: int,
+    total_classes: int,
+    class_start_idx: int,
+    n_cols: int,
+    n_rows: int,
+    BLOCK_SIZE: int,
+    num_warps: int
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
     if logits.stride(-1) != 1:
         logits = logits.contiguous()
@@ -205,7 +217,7 @@ def cross_entropy_triton_fwd(logits, labels, precomputed_lse, use_precomputed_ls
     return losses, z_losses, lse
 
 
-@torch.library.register_fake("flasht5::cross_entropy_triton_fwd", cross_entropy_triton_fwd)
+@torch.library.register_fake("flasht5::cross_entropy_triton_fwd")
 def cross_entropy_triton_fwd_abstract(logits, labels, precomputed_lse, use_precomputed_lse, split, smoothing, logit_scale, lse_square_scale, ignore_index, total_classes, class_start_idx, n_cols, n_rows, BLOCK_SIZE, num_warps):
     losses    = torch.empty(n_rows, dtype=torch.float32, device=logits.device)
     z_losses = torch.empty(n_rows, dtype=torch.float32, device=logits.device)
@@ -213,10 +225,24 @@ def cross_entropy_triton_fwd_abstract(logits, labels, precomputed_lse, use_preco
 
     return losses, z_losses, logsumexp
 
-torch.library.define("flasht5::cross_entropy_triton_bwd", "(Tensor dlosses, Tensor logits, Tensor lse, Tensor labels, bool inplace_backward, float smoothing, float logit_scale, float lse_square_scale, int ignore_index, int total_classes, int class_start_idx, int n_cols, int n_rows, int BLOCK_SIZE, int num_warps) -> Tensor")
-
-@torch.library.impl("flasht5::cross_entropy_triton_bwd", "default")
-def cross_entropy_triton_bwd(dlosses, logits, lse, labels, inplace_backward, smoothing, logit_scale, lse_square_scale, ignore_index, total_classes, class_start_idx, n_cols, n_rows, BLOCK_SIZE, num_warps):
+@torch.library.custom_op("flasht5::cross_entropy_triton_bwd", mutates_args=(), device_types="cuda")
+def cross_entropy_triton_bwd(
+    dlosses: torch.Tensor,
+    logits: torch.Tensor,
+    lse: torch.Tensor,
+    labels: torch.Tensor,
+    inplace_backward: bool,
+    smoothing: float,
+    logit_scale: float,
+    lse_square_scale: float,
+    ignore_index: int,
+    total_classes: int,
+    class_start_idx: int,
+    n_cols: int,
+    n_rows: int,
+    BLOCK_SIZE: int,
+    num_warps: int
+) -> torch.Tensor:
 
     dlogits = logits if inplace_backward else torch.empty_like(logits)
 
@@ -248,7 +274,7 @@ def cross_entropy_triton_bwd(dlosses, logits, lse, labels, inplace_backward, smo
     return dlogits
 
 
-@torch.library.register_fake("flasht5::cross_entropy_triton_bwd", cross_entropy_triton_bwd)
+@torch.library.register_fake("flasht5::cross_entropy_triton_bwd")
 def cross_entropy_triton_bwd_abstract(dlosses, logits, lse, labels, inplace_backward, smoothing, logit_scale, lse_square_scale, ignore_index, total_classes, class_start_idx, n_cols, n_rows, BLOCK_SIZE, num_warps):
     return torch.empty_like(logits)
 

@@ -20,6 +20,7 @@ import triton
 import triton.language as tl
 import torch
 import math
+from typing import Tuple
 
 @triton.jit
 def _rmsnorm_fwd_kernel(
@@ -130,11 +131,12 @@ def _rmsnorm_bwd_kernel(
     tl.store(DW + row_block_id * N + cols, dw, mask=mask)
 
 
-# Wrapper for triton kernel for torch.compile - should be unecessary for PyTorch 2.3 ?
-torch.library.define("flasht5::rmsnorm_triton_fwd", "(Tensor X, Tensor W, float eps) -> (Tensor, Tensor)")
-
-@torch.library.impl("flasht5::rmsnorm_triton_fwd", "default")
-def rmsnorm_triton_fwd(X, weight, eps):
+@torch.library.custom_op("flasht5::rmsnorm_triton_fwd", mutates_args=(), device_types="cuda")
+def rmsnorm_triton_fwd(
+    X: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float
+) -> Tuple[torch.Tensor, torch.Tensor]:
 
     M, N = X.shape
 
@@ -172,7 +174,7 @@ def rmsnorm_triton_fwd(X, weight, eps):
     return Y, rstd
 
 
-@torch.library.register_fake("flasht5::rmsnorm_triton_fwd", rmsnorm_triton_fwd)
+@torch.library.register_fake("flasht5::rmsnorm_triton_fwd")
 def rmsnorm_triton_fwd_abstract(X, weight, eps):
     M, N = X.shape
 
@@ -181,16 +183,14 @@ def rmsnorm_triton_fwd_abstract(X, weight, eps):
 
     return Y, rstd
 
-torch.library.define("flasht5::rmsnorm_triton_bwd", "(Tensor dY, Tensor X, Tensor W, Tensor rstd, float eps) -> (Tensor, Tensor)")
-
-@torch.library.impl("flasht5::rmsnorm_triton_bwd", "default")
+@torch.library.custom_op("flasht5::rmsnorm_triton_bwd", mutates_args=(), device_types="cuda")
 def rmsnorm_triton_bwd(
-    dy,
-    x,
-    weight,
-    rstd,
-    eps
-):
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    rstd: torch.Tensor,
+    eps: float
+) -> Tuple[torch.Tensor, torch.Tensor]:
     M, N = x.shape
     assert x.stride(-1) == 1
     assert dy.stride(-1) == 1
@@ -236,7 +236,7 @@ def rmsnorm_triton_bwd(
     return dx, dw
 
 
-@torch.library.register_fake("flasht5::rmsnorm_triton_bwd", rmsnorm_triton_bwd)
+@torch.library.register_fake("flasht5::rmsnorm_triton_bwd")
 def rmsnorm_triton_bwd_abstract(dy, x, weight, rstd, eps):
 
     M, N = x.shape
