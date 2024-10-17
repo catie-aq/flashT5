@@ -38,7 +38,7 @@ from .configuration_flash_t5 import FlashT5Config
 from ..utils.positional_encoding import ALiBiPositionalEncoding, RelativePositionalEncoding, RotaryPositionalEncoding, FIRE
 
 class FlashT5CrossEntropyLoss(nn.Module):
-    def __init__(self, z_loss_factor=0.0, label_smoothing=0.0, use_triton_crossentropy=False):
+    def __init__(self, z_loss_factor=0.0, label_smoothing=0.0, use_triton_crossentropy=False, inplace_backward=False):
 
         super().__init__()
 
@@ -48,6 +48,7 @@ class FlashT5CrossEntropyLoss(nn.Module):
         self.use_triton_crossentropy = use_triton_crossentropy
         self.z_loss_factor = z_loss_factor
         self.label_smoothing = label_smoothing
+        self.inplace_backward = inplace_backward
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
@@ -60,7 +61,11 @@ class FlashT5CrossEntropyLoss(nn.Module):
     def forward(self, logits, labels):
 
         if self.use_triton_crossentropy:
-            return fast_cross_entropy_loss(logits, labels,lse_square_scale=self.z_loss_factor, label_smoothing=self.label_smoothing)[0].mean()
+            return fast_cross_entropy_loss(logits, labels, \
+                                           lse_square_scale=self.z_loss_factor, \
+                                           label_smoothing=self.label_smoothing, \
+                                           inplace_backward=self.inplace_backward \
+                                          )[0].mean()
 
         # use standard method
         batch, seq_len, d = logits.shape
@@ -626,7 +631,8 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
 
         self.loss_fct = FlashT5CrossEntropyLoss(z_loss_factor=config.z_loss,
                                                 label_smoothing=config.label_smoothing,
-                                                use_triton_crossentropy=config.use_triton_crossentropy)
+                                                use_triton_crossentropy=config.use_triton_crossentropy,
+                                                inplace_backward=config.crossentropy_inplace_backward)
 
         # Initialize weights and apply final processing
         self.post_init()

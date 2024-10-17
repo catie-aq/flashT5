@@ -59,7 +59,7 @@ def cross_entropy_fwd_kernel(
     PRECOMPUTED_LSE: tl.constexpr,  # If LSE is already computed (also no smoothing and logit_scale == 1.0)
 ):
     row_idx = tl.program_id(0)
-    logits_ptr = logits_ptr + row_idx * logits_row_stride
+    logits_ptr = logits_ptr + row_idx * logits_row_stride.to(tl.int64)
     sum_logits = 0.0  # For smoothing
     if not PRECOMPUTED_LSE:
         # Statistics for online softmax
@@ -138,8 +138,8 @@ def cross_entropy_bwd_kernel(
 ):
     row_idx = tl.program_id(0)
     col_block_idx = tl.program_id(1)
-    logits_ptr = logits_ptr + row_idx * logits_row_stride
-    dlogits_ptr = dlogits_ptr + row_idx * dlogits_row_stride
+    logits_ptr = logits_ptr + row_idx * logits_row_stride.to(tl.int64)
+    dlogits_ptr = dlogits_ptr + row_idx * dlogits_row_stride.to(tl.int64)
     col_offsets = col_block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     label_idx = tl.load(labels_ptr + row_idx)
     if label_idx != ignore_index:
@@ -225,7 +225,7 @@ def cross_entropy_triton_fwd_abstract(logits, labels, precomputed_lse, use_preco
 
     return losses, z_losses, logsumexp
 
-@torch.library.custom_op("flasht5::cross_entropy_triton_bwd", mutates_args=(), device_types="cuda")
+@torch.library.custom_op("flasht5::cross_entropy_triton_bwd", mutates_args={"logits"}, device_types="cuda")
 def cross_entropy_triton_bwd(
     dlosses: torch.Tensor,
     logits: torch.Tensor,
