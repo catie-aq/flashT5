@@ -22,7 +22,7 @@ model_args:
   relative_attention_max_distance: 128
   relative_attention_num_buckets: 32
   tie_word_embeddings: false
-  use_flash_attention: triton
+  attention_type: triton
   use_glu_mlp: true
   use_randomized_position_encoding: false
   z_loss: 0.0001
