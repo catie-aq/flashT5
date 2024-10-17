@@ -14,8 +14,8 @@ model_args:
   label_smoothing: 0.0
   max_sequence_length: 1024
   model_type: flash_t5
-  num_heads: 6
-  num_layers: 8
+  num_heads: 8
+  num_layers: 6
   position_encoding_type: t5
   relative_attention_max_distance: 128
   relative_attention_num_buckets: 32
@@ -44,7 +44,7 @@ training_args:
   do_eval: true
   eval_accumulation_steps: 1
   eval_steps: 1000
-  evaluation_strategy: steps
+  eval_strategy: steps
   gradient_accumulation_steps: 2
   gradient_checkpointing: false
   group_by_length: false

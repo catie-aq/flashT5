@@ -46,7 +46,7 @@ training_args:
   do_eval: true
   eval_accumulation_steps: 5
   eval_steps: 500
-  evaluation_strategy: steps
+  eval_strategy: steps
   gradient_accumulation_steps: 8
   gradient_checkpointing: false
   group_by_length: false
