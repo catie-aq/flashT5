@@ -6,7 +6,7 @@ import logging
 from transformers import T5Config
 
 AUTO_MAP = {
-    "AutoModel": "modeling_flash_t5.FlashT5ForConditionalGeneration",
+    "AutoModel": "modeling_flash_t5.FlashT5EncoderModel",
     "AutoModelForSeq2SeqLM": "modeling_flash_t5.FlashT5ForConditionalGeneration",
     "AutoModelForTokenClassification": "custom_heads_flash_t5.FlashT5ForTokenClassification",
     "AutoModelForQuestionAnswering": "custom_heads_flash_t5.FlashT5ForQuestionAnswering",

@@ -740,3 +740,41 @@ class FlashT5ForConditionalGeneration(FlashT5PreTrainedModel):
             logits=lm_logits,
             encoder_hidden_states=encoder_hidden_states
         )
+
+
+class FlashT5EncoderModel(FlashT5PreTrainedModel):
+    def __init__(self, config: FlashT5Config):
+        super().__init__(config)
+        self.shared = nn.Embedding(config.vocab_size, config.d_model)
+        encoder_config = copy.deepcopy(config)
+        encoder_config.use_cache = False
+        encoder_config.is_encoder_decoder = False
+        self.encoder = FlashT5Stack(encoder_config, self.shared)
+        # Initialize weights and apply final processing
+        self.post_init()
+        # Model parallel
+        self.model_parallel = False
+        self.device_map = None
+    def get_input_embeddings(self):
+        return self.shared
+    def set_input_embeddings(self, new_embeddings):
+        self.shared = new_embeddings
+        self.encoder.set_input_embeddings(new_embeddings)
+    def get_encoder(self):
+        return self.encoder
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple[torch.FloatTensor], BaseModelOutput]:
+        encoder_outputs = self.encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds
+        )
+        return encoder_outputs
