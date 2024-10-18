@@ -220,8 +220,6 @@ class FlashT5ForSequenceClassification(FlashT5PreTrainedModel):
         )
 
 
-
-################## Seq2Seq head ##################
 class FlashT5ForQuestionAnswering(FlashT5PreTrainedModel):
     _keys_to_ignore_on_load_missing = [r"encoder.embed_tokens.weight"]
 
