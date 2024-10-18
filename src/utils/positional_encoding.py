@@ -60,7 +60,7 @@ class RelativePositionalEncoding(nn.Module):
         # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
         relative_position_if_large = max_exact + (
             torch.log(relative_position.float() / max_exact)
-            / math.log(max_distance / max_exact)
+            / torch.log(torch.tensor(max_distance / max_exact))
             * (num_buckets - max_exact)
         ).to(torch.long)
         relative_position_if_large = torch.min(
