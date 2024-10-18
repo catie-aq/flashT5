@@ -15,7 +15,9 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
                 denoiser_list: List,
                 denoiser_proportions: List,
                 causal: bool = False,
-                random_chunk: bool = True):
+                random_chunk: bool = True,
+                fixed_batch_size: bool = False,
+                min_size_inputs: int = 10):
 
         super().__init__()
 
@@ -38,6 +40,8 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
 
         self.causal = causal
         self.random_chunk = random_chunk
+        self.fixed_batch_size = fixed_batch_size
+        self.min_size_inputs = min_size_inputs
 
     def is_special_token(self, x):
         return (x <= self.extra_ids[0]) & (x >= self.extra_ids[-1])
@@ -83,6 +87,9 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
         return batch_inputs, batch_labels
 
     def __call__(self, examples: List[Dict[str, np.ndarray]]) -> BatchEncoding:
+
+        # filter out examples that are too short
+        examples = [x for x in examples if x["input_ids"].shape[1] > self.min_size_inputs]
 
         input_batch_size = len(examples)
 
@@ -138,6 +145,12 @@ class DataCollatorForUL2MLM(DataCollatorMixin):
             # right pad everything
             labels = np.concatenate([np.pad(x, ((0,0), (0, self.max_labels_length - x.shape[1])), constant_values=self.tokenizer.pad_token_id) for x in labels], axis=0)
             input_ids = np.concatenate([np.pad(x, ((0,0), (0, self.max_length - x.shape[1])), constant_values=self.tokenizer.pad_token_id) for x in input_ids], axis=0)
+
+
+        # fixed batch size with tensor repeat
+        if self.fixed_batch_size and input_ids.shape[0] < self.batch_size:
+            input_ids = np.pad(input_ids, ((0, self.batch_size - input_ids.shape[0]), (0, 0)), mode="wrap")
+            labels = np.pad(labels, ((0, self.batch_size - labels.shape[0]), (0, 0)), mode="wrap")
 
         batch = {}
         causal_labels = None
