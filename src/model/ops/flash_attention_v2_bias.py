@@ -302,7 +302,7 @@ def get_fwd_config(B, H, M, N, D, causal):
                     BLOCK_M, BLOCK_N, num_stages, num_warps = 128, 128, 3, 8
         else:
             if D <= 64:
-                BLOCK_M, BLOCK_N, num_stages, num_warps = 128, 64, 4, 4
+                BLOCK_M, BLOCK_N, num_stages, num_warps = 128, 64, 3, 4
             else:
                 if M <= 1024:
                     BLOCK_M, BLOCK_N, num_stages, num_warps = 128, 32, 2, 4
