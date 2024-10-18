@@ -271,8 +271,7 @@ def cross_entropy_triton_bwd(
             num_warps=num_warps,
         )
 
-    return dlogits
-
+    return dlogits if not inplace_backward else None
 
 @torch.library.register_fake("flasht5::cross_entropy_triton_bwd")
 def cross_entropy_triton_bwd_abstract(dlosses, logits, lse, labels, inplace_backward, smoothing, logit_scale, lse_square_scale, ignore_index, total_classes, class_start_idx, n_cols, n_rows, BLOCK_SIZE, num_warps):
@@ -379,6 +378,9 @@ class CrossEntropyLoss(torch.autograd.Function):
             ctx.lse_square_scale, ctx.ignore_index, ctx.total_classes, \
             ctx.class_start_idx, n_cols, n_rows, BLOCK_SIZE, num_warps
         )
+
+        if ctx.inplace_backward:
+            dlogits = logits
 
         return dlogits, None, None, None, None, None, None, None, None, None
 
