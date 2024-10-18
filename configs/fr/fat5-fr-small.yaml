@@ -46,7 +46,7 @@ training_args:
   eval_accumulation_steps: 1
   eval_steps: 1000
   eval_strategy: steps
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 4
   gradient_checkpointing: false
   group_by_length: false
   include_tokens_per_second: true
@@ -67,11 +67,11 @@ training_args:
   save_steps: 5000
   save_strategy: steps
   seed: 42
-  torch_compile: false
+  torch_compile: true
   warmup_ratio: 0.0
   warmup_steps: 20000
   weight_decay: 0.0
 collator_args:
   max_token_length: 512
   max_labels_length: 512
-  output_batch_size: 256
+  output_batch_size: 128
