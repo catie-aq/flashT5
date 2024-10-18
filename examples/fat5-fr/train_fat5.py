@@ -28,18 +28,19 @@ torch.set_float32_matmul_precision("high")
 with open(sys.argv[1], 'r') as config_file:
     config = yaml.safe_load(config_file)
 
+root_path = sys.argv[2] + "/"
+
 tokenizer = AutoTokenizer.from_pretrained(config["tokenizer_name"])
 
-df_train_culturax = datasets.load_from_disk("/mnt/data2/culturax_tokenized_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
-df_train_news = datasets.load_from_disk("/mnt/data2/news_tokenized_nopad_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
-df_train_justice = datasets.load_from_disk("/mnt/data2/justice_tokenized_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
-df_train_stack = datasets.load_from_disk("/mnt/data2/thestack_tokenized_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
-df_train_wiki = datasets.load_from_disk("/mnt/data2/wikipedia_2023_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
+df_train_culturax = datasets.load_from_disk(root_path + "culturax_tokenized_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
+df_train_news = datasets.load_from_disk(root_path + "news_tokenized_nopad_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
+df_train_justice = datasets.load_from_disk(root_path + "justice_tokenized_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
+df_train_stack = datasets.load_from_disk(root_path + "thestack_tokenized_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
+df_train_wiki = datasets.load_from_disk(root_path + "wikipedia_2023_tokenizer-flasht5-french/train", keep_in_memory=False).with_format("np")
 
 train_dataset = datasets.concatenate_datasets([df_train_culturax, df_train_news, df_train_justice, df_train_stack, df_train_wiki])
 
-valid_news = datasets.load_from_disk("/mnt/data2/news_tokenized_nopad_tokenizer-flasht5-french/valid", keep_in_memory=False).with_format("np")
-#valid_culturax = datasets.load_from_disk("/mnt/data2/culturax_tokenized_tokenizer-flasht5-french/valid", keep_in_memory=False).with_format("np")
+valid_news = datasets.load_from_disk(root_path + "news_tokenized_nopad_tokenizer-flasht5-french/valid", keep_in_memory=False).with_format("np")
 
 valid_dataset = valid_news
 
