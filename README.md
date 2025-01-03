@@ -121,6 +121,8 @@ For the forward pass, we have:
 </picture>
 </div>
 
+<br>
+
 For the forward pass, we can see that the Triton approach achieves 1.34 times more FLOPS than SPDA, and that the Flash Attention RPE approach achieves 1.99 times more FLOPS than SPDA.
 We can also see that our bf16 implementation is equivalent to fp16 (doing even better at size 512).
 
@@ -132,6 +134,8 @@ For the backward pass, we have:
   <img alt="FLOPS BWD-causal-True" src="./assets/benchmarks/BWD-causal-True.png">
 </picture>
 </div>
+
+<br>
 
 For the backward pass, the Triton implementation is less efficient than SPDA, with 0.71 times the FLOPS of SPDA. The Flash Attention RPE implementation is more or less equivalent to SPDA (1.018 times more FLOPS).
 We can also observe that Triton in head_dim 64 is more efficient than Triton in head_dim 128.
@@ -150,6 +154,8 @@ For cross-entropy, we obtain a forward pass 7 to 11.4 times faster, a backward p
 </picture>
 </div>
 
+<br>
+
 For the RMSNorm layer, we obtain a 3 to 5 times faster forward pass, a 2.33 to 4.33 times faster reverse pass and a memory reduced by a factor of 3.2:
 
 <div align="center">
@@ -158,9 +164,9 @@ For the RMSNorm layer, we obtain a 3 to 5 times faster forward pass, a 2.33 to 4
   <img alt="FLOPS BWD-causal-True" src="./assets/benchmarks/LN.png">
 </picture>
 </div>
-  
-Note that all benchmark graphs can be generated automatically using the following [code](https://github.com/catie-aq/flashT5/tree/main/benchmarks). 
 </details>
+
+Note that all benchmark graphs can be generated automatically using the following [code](https://github.com/catie-aq/flashT5/tree/main/benchmarks). 
 
 <br>
 
