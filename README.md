@@ -10,7 +10,7 @@
 
 ## News
 
-- **10 January 2025**: FAT5 "official release" with code (this repo), [model weights](https://huggingface.co/CATIE-AQ/FAT5-small) and technical report (available in [English](https://huggingface.co/spaces/CATIE-AQ/FAT5-report) and [French](https://huggingface.co/spaces/CATIE-AQ/FAT5-rapport)).
+- **10 January 2025**: FAT5 "official release" with code (this repo), [model weights](https://huggingface.co/CATIE-AQ/FAT5-small) and technical report (available in [English](https://huggingface.co/spaces/CATIE-AQ/FAT5-report) and [French](https://huggingface.co/spaces/CATIE-AQ/FAT5-rapport)).  
 Note: we're currently working with Hugging Face team to port FAT5 into [transformers](https://github.com/huggingface/transformers), to make our model easier to use (especially for finetuning).
   
 - **3 October 2024**: Support [fa2-rpe patch](https://github.com/Dao-AILab/flash-attention/pull/956) for Flash Attention 2 : linear memory for T5-like relative position encoding.
@@ -57,7 +57,7 @@ We support different implementation of attention biases:
 <div align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./assets/FAT5_dark.gif">
-  <img width=400px alt="FAT5 animation" src="./assets/FAT5.gif">
+  <img width=500px alt="FAT5 animation" src="./assets/FAT5.gif">
 </picture>
 </div>
 
@@ -210,6 +210,7 @@ Note that we tested and trained the model of the tutorial on A100. It may or may
 
 Once you've pre-trained your model, you'll want to finetune it. Because it's a custom model (hence the need for `trust_remote_code=True` to load it), it's currently causing some difficulties due to flaws in Hugging Face's [transformers](https://github.com/huggingface/transformers) library (during the `push_to_hub`, for example). This should be resolved in January 2025, as we're working on porting the FAT5 directly into Transformers with the help of their lovely team 🤗  
 In the meantime, you can consult this [page](docs/finetuning.md).
+
 <br>
 
 ## Roadmap
