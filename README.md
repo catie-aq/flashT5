@@ -226,6 +226,22 @@ More generally, we invite you to consult the “Next stage” section of the blo
 
 <br>
 
+## Citation
+
+```
+@misc{FAT5,
+    title        = { FAT5: Flash Attention T5 },
+    author       = { Boris ALBAR and Loïck BOURDOIS },
+    organization = { Centre Aquitain des Technologies de l'Information et Electroniques }, 
+    year         = 2025,
+    url          = { https://huggingface.co/spaces/CATIE-AQ/FAT5-report },
+    doi          = { 10.57967/hf/4160 },
+    publisher    = { Hugging Face }
+    }
+ ```
+
+<br>
+    
 ## License
 [Apache-2.0 license](https://github.com/catie-aq/flashT5/tree/main?tab=Apache-2.0-1-ov-file#readme)
 
