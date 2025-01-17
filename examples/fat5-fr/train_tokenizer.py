@@ -21,7 +21,7 @@ def batch_iterator(dataset, batch_size=1000):
     for batch in dataset.iter(batch_size=batch_size):
         yield batch["raw_content"]
 
-special_tokens_dict = ["<cls>", "</s>", "<mask>", "<pad>", "<sep>", "<unk>"]
+special_tokens_dict = ["<cls>", "<s>", "</s>", "<mask>", "<pad>", "<sep>", "<unk>"]
 
 for i in range(256):
     special_tokens_dict.append("<extra_id_" + str(i) + ">")
