@@ -187,7 +187,7 @@ Our contribution focuses on French, with the pre-training and finetuning of mode
 Nevertheless, to ensure that it can be used in other languages, we have developed a [code](https://github.com/catie-aq/flashT5/blob/main/convert_huggingface_t5.py) for adapting already pre-trained (m)T5/FLAN-T5 weights to our method. In this way, we hope users of a specific language will be able to efficiently continue pre-training one of these models to adapt it to more recent data, for example.  
 Note, however, that this adaptation is limited, since the additional pre-training will have to be carried out within the precision of the original model. For example, if the model's weights are in FP32 (which is the case with the FLAN-T5), training will not be as fast as with the FAT5, which is in BF16.
 
-For English speakers, we have already adapted the weights of the various versions of the [FLANT-T5](https://arxiv.org/abs/2210.11416) to our method. All weights can be found in this Hugging Face [collection](https://huggingface.co/collections/CATIE-AQ/catie-english-fat5-flan-662b679a8e855c7c0137d69e).  
+For English speakers, we have already adapted the weights of the various versions of the [FLAN-T5](https://arxiv.org/abs/2210.11416) to our method. All weights can be found in this Hugging Face [collection](https://huggingface.co/collections/CATIE-AQ/catie-english-fat5-flan-662b679a8e855c7c0137d69e).  
 To use one of the models, simply do the command:
 
 ```
