@@ -9,9 +9,12 @@
 </div>
 
 ## News
-
-- **10 January 2025**: FAT5 "official release" with code (this repo), [model weights](https://huggingface.co/CATIE-AQ/FAT5-small) and technical report (available in [English](https://huggingface.co/spaces/CATIE-AQ/FAT5-report) and [French](https://huggingface.co/spaces/CATIE-AQ/FAT5-rapport)).  
-Note: we're currently working with Hugging Face team to port FAT5 into [transformers](https://github.com/huggingface/transformers), to make our model easier to use (especially for finetuning).
+  
+- **10 January 2025**: FAT5 "official release" with code (this repo), [model weights](https://huggingface.co/CATIE-AQ/FAT5-small) and technical report (available in [English](https://huggingface.co/spaces/CATIE-AQ/FAT5-report) and [French](https://huggingface.co/spaces/CATIE-AQ/FAT5-rapport)).
+  
+> [!NOTE]
+> We're currently working with Hugging Face team to port FAT5 into [`transformers`](https://github.com/huggingface/transformers), to make our model easier to use (especially for finetuning).  
+> As the authors of the [`flash-attention`](https://github.com/Dao-AILab/flash-attention) have indicated us that they don't have the bandwidth to merge our kernels directly into their library (see the links of our two PR below), which we would then import into `transformers`, we've opted to create a small library as an alternative, which takes us a little time. It will be available in [here](https://github.com/b-albar/flash-rpe) when ready.
   
 - **3 October 2024**: Support [fa2-rpe patch](https://github.com/Dao-AILab/flash-attention/pull/956) for Flash Attention 2 : linear memory for T5-like relative position encoding.
 
