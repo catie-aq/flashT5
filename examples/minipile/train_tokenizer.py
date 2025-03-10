@@ -14,7 +14,7 @@ def batch_iterator(dataset, batch_size=1000):
     for batch in dataset.iter(batch_size=batch_size):
         yield batch["raw_content"]
 
-special_tokens_dict = ["<cls>", "</s>", "<mask>", "<pad>", "<sep>", "<unk>"]
+special_tokens_dict = ["<cls>", "<s>", "</s>", "<mask>", "<pad>", "<sep>", "<unk>"]
 
 # Add extra masking tokens for the FAT5 model
 for i in range(256):
@@ -27,7 +27,7 @@ pat_str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[
 # Train the tokenizer
 tokenizer = Tokenizer(BPE(unk_token="<unk>"))
 trainer = BpeTrainer(vocab_size=vocab_size, special_tokens=special_tokens_dict, max_token_length=20)
-pre_tokenizer = Sequence([Split(pat_str, behavior="isolated")])
+pre_tokenizer = Sequence([Split(pattern=Regex(pat_str), behavior="isolated")])
 tokenizer.pre_tokenizer = pre_tokenizer
 
 tokenizer.train_from_iterator(batch_iterator(df), trainer)
