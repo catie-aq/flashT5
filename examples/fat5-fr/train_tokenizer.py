@@ -31,7 +31,7 @@ pat_str = r" ?\p{L}+|\p{N}{1}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
 
 tokenizer = Tokenizer(BPE(unk_token="<unk>"))
 trainer = BpeTrainer(vocab_size=VOCAB_SIZE, special_tokens=special_tokens_dict, max_token_length=20, show_progress=True)
-pre_tokenizer = Sequence([Split(pattern=pat_str, behavior="isolated")])
+pre_tokenizer = Sequence([Split(pattern=Regex(pat_str), behavior="isolated")])
 tokenizer.pre_tokenizer = pre_tokenizer
 
 tokenizer.train_from_iterator(batch_iterator(df), trainer, length=len(df))
