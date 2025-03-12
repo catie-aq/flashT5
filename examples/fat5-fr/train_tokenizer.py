@@ -1,6 +1,6 @@
 import datasets
 
-from tokenizers import Tokenizer
+from tokenizers import Tokenizer, Regex
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Split, Sequence
