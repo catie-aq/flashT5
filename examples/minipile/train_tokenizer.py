@@ -1,6 +1,6 @@
 import datasets
 
-from tokenizers import Tokenizer
+from tokenizers import Tokenizer, Regex
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Sequence, Split
@@ -12,7 +12,7 @@ df = datasets.load_dataset("JeanKaddour/minipile", cache_dir="/mnt/storage3/hf_c
 
 def batch_iterator(dataset, batch_size=1000):
     for batch in dataset.iter(batch_size=batch_size):
-        yield batch["raw_content"]
+        yield batch["text"]
 
 special_tokens_dict = ["<cls>", "<s>", "</s>", "<mask>", "<pad>", "<sep>", "<unk>"]
 
