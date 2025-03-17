@@ -11,11 +11,7 @@
 ## News
   
 - **10 January 2025**: FAT5 "official release" with code (this repo), [model weights](https://huggingface.co/CATIE-AQ/FAT5-small) and technical report (available in [English](https://huggingface.co/spaces/CATIE-AQ/FAT5-report) and [French](https://huggingface.co/spaces/CATIE-AQ/FAT5-rapport)).
-  
-> [!NOTE]
-> We're currently working with Hugging Face team to port FAT5 into [`transformers`](https://github.com/huggingface/transformers), to make our model easier to use (especially for finetuning).  
-> As the authors of the [`flash-attention`](https://github.com/Dao-AILab/flash-attention) have indicated us that they don't have the bandwidth to merge our kernels directly into their library (see the links of our two PR below), which we would then import into `transformers`, we've opted to create a small library as an alternative, which takes us a little time. It will be available in [here](https://github.com/b-albar/flash-rpe) when ready.
-  
+    
 - **3 October 2024**: Support [fa2-rpe patch](https://github.com/Dao-AILab/flash-attention/pull/956) for Flash Attention 2 : linear memory for T5-like relative position encoding.
 
 - **23 September 2024**: Add a [tutorial](examples/minipile) to pretrain a small model on [minipile](https://huggingface.co/datasets/JeanKaddour/minipile).
@@ -219,13 +215,19 @@ In the meantime, you can consult this [page](docs/finetuning.md).
 ## Roadmap
 Here is several following up works that we would like to make:
 
+- add FAT5 in [`transformers`](https://github.com/huggingface/transformers)  
+We started working with Hugging Face team to port FAT5 into [`transformers`](https://github.com/huggingface/transformers), to make our model easier to use (especially for finetuning).  
+We're facing two problems:
+  - More work than expected. Indeed, as the authors of the [`flash-attention`](https://github.com/Dao-AILab/flash-attention) have indicated us that they don't have the bandwidth to merge our kernels directly into their library (cf. the links of our two PR), which we would then import into `transformers`, we've opted to create a small library as an alternative, which takes us a little time. It will be available in [here](https://github.com/b-albar/flash-rpe) when ready.
+  - Less bandwidth on our side. Since this is a side project, it's not considered a priority by our manager. So we can't make as much progress as we'd like.
+
 - Experiment with finetuning or distillation with long sequences.
 
 - Experiment with [SpacTor](https://arxiv.org/abs/2401.13160)
 
 - We are also trying to revisit the encoder-decoder architecture using subquadratic operators to replace the attention. Stay tuned for more information about this.
 
-More generally, we invite you to consult the “Next stage” section of the blog post.
+More generally, we invite you to consult the "Next stage" section of the [blog post](https://huggingface.co/spaces/CATIE-AQ/FAT5-report).
 
 <br>
 
