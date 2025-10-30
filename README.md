@@ -1,5 +1,12 @@
-<div align="center">
+> [!WARNING]
+> Neither of the two authors who contributed to this project still works at CATIE.  
+> Therefore, no follow-up will be conducted on this repo.
+> The decision was made not to archive it in case people wish to discuss this work among themselves in the issues, but they will not receive a response from the authors or PR will not be considered.
 
+<br>
+
+<div align="center">
+  
 # FAT5 - A fast implementation of T5/UL2 with Flash Attention
 
 [![huggingface](https://img.shields.io/badge/🤗_Hugging_Face-Collection-FFD21E)](https://huggingface.co/collections/CATIE-AQ/catie-french-fat5-ul2-677697a35feea336389d6403)
